@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   build:
-    name: Ubuntu 22.04 / Intel MKL 2026 / MUMPS 5.5.1
+    name: Ubuntu 22.04 / Intel MKL 2026.0 / MUMPS 5.5.1
     runs-on: ubuntu-22.04
     timeout-minutes: 180
 
@@ -48,7 +48,7 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/conan" --version
 
-      - name: Install Intel oneAPI MKL + MPI + Fortran
+      - name: Install Intel oneAPI MKL 2026.0 + MPI + Fortran
         run: |
           wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
             | gpg --dearmor \
@@ -57,8 +57,8 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/oneAPI.list >/dev/null
           sudo apt-get update
           sudo apt-get install -y \
-            intel-oneapi-mkl \
-            intel-oneapi-mkl-devel \
+            intel-oneapi-mkl-2026.0 \
+            intel-oneapi-mkl-devel-2026.0 \
             intel-oneapi-compiler-fortran-2025.1 \
             intel-oneapi-mpi \
             intel-oneapi-mpi-devel
@@ -74,6 +74,7 @@ jobs:
           echo "cmake=$(cmake --version | head -1)"
           echo "mpi=$(mpirun --version 2>&1 | head -1)"
           test -n "$MKLROOT"
+          test "$MKLROOT" = "/opt/intel/oneapi/mkl/2026.0"
           test -x "$(command -v ifx)"
 
           {
