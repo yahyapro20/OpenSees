@@ -63,17 +63,15 @@ jobs:
           
           if [ ! -f ~/opensees-build/mumps/install/lib/libdmumps.a ]; then echo "🚨 MUMPS failed!"; exit 1; fi
 
-      - name: "5. Configure OpenSees (No -flto, No Warnings)"
+      - name: "5. Configure OpenSees (Path Fix & No Warnings)"
         run: |
           cd ~/opensees-build
           git clone https://github.com/yahyapro20/OpenSees.git
           cd OpenSees && mkdir build && cd build
           source /opt/intel/oneapi/setvars.sh --force > /dev/null 2>&1
           
-          # 🔴 تغییرات حیاتی: 
-          # 1. حذف -flto برای جلوگیری از پر شدن رم 7GB گیت‌هاب در مرحله لینک (خطای 100%)
-          # 2. اضافه شدن -w برای حذف کامل هشدارهای خسته‌کننده و افزایش سرعت کامپایل
-          # 3. استفاده از gfortran برای جلوگیری از خطای لینک کدهای قدیمی Fortran
+          # 🔴 تغییر حیاتی: 
+          # مسیر MUMPS_DIR به پوشه lib تغییر یافت تا OpenSees بتواند فایل libdmumps.a را پیدا کند.
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=gcc \
@@ -85,7 +83,7 @@ jobs:
             -DBLA_VENDOR=Intel10_64lp \
             -DMKL_LINK=static \
             -DMKL_INTERFACE_FULL=intel_lp64 \
-            -DMUMPS_DIR="$HOME/opensees-build/mumps/install" \
+            -DMUMPS_DIR="$HOME/opensees-build/mumps/install/lib" \
             -DCMAKE_INSTALL_PREFIX="$HOME/opensees-build/install"
 
       - name: "6. Build Targets"
@@ -95,7 +93,7 @@ jobs:
           cmake --build . --target OpenSees --parallel $(nproc)
           cmake --build . --target OpenSeesSP --parallel $(nproc)
 
-      - name: "7. Strict MKL Verification (Takes 0.1s)"
+      - name: "7. Strict MKL Verification"
         run: |
           cd ~/opensees-build/OpenSees/build
           MKL_CHECK=$(strings ./OpenSeesSP | grep -i "Math Kernel Library" || true)
