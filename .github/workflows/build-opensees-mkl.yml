@@ -86,17 +86,30 @@ jobs:
         cmake --build $HOME/mumps-build --parallel 4
         cmake --install $HOME/mumps-build
 
-        # --- FIX: scivision/mumps installs to lib64 on some systems ---
         echo "=== MUMPS install tree ==="
-        find $HOME/mumps-install -type f -name "*.a" | head -20
+        find $HOME/mumps-install -type f -name "*.a" | sort
 
+        echo ""
+        echo "=== MUMPS build tree ==="
+        find $HOME/mumps-build -type f -name "*.a" | sort
+
+        # --- FIX: scivision/mumps may install to lib64 instead of lib ---
         if [ -d "$HOME/mumps-install/lib64" ] && [ ! -d "$HOME/mumps-install/lib" ]; then
           ln -s lib64 $HOME/mumps-install/lib
           echo "Created symlink lib -> lib64"
         fi
 
-        test -f $HOME/mumps-install/lib/libdmumps.a
-        echo "MUMPS_DIR=$HOME/mumps-install" >> $GITHUB_ENV
+        # --- FIX: if install did not work, use build dir directly ---
+        if [ ! -f "$HOME/mumps-install/lib/libdmumps.a" ] && [ -f "$HOME/mumps-build/lib/libdmumps.a" ]; then
+          echo "MUMPS_DIR=$HOME/mumps-build" >> $GITHUB_ENV
+          echo "Using build directory instead of install"
+        elif [ ! -f "$HOME/mumps-install/lib/libdmumps.a" ] && [ -f "$HOME/mumps-build/lib64/libdmumps.a" ]; then
+          ln -s lib64 $HOME/mumps-build/lib 2>/dev/null || true
+          echo "MUMPS_DIR=$HOME/mumps-build" >> $GITHUB_ENV
+          echo "Using build directory with lib64 symlink"
+        else
+          echo "MUMPS_DIR=$HOME/mumps-install" >> $GITHUB_ENV
+        fi
 
     - name: Configure OpenSees
       shell: bash
@@ -104,6 +117,10 @@ jobs:
         source /opt/intel/oneapi/setvars.sh --force
         rm -rf build
         mkdir build && cd build
+
+        echo "MUMPS_DIR=$MUMPS_DIR"
+        ls -la $MUMPS_DIR/lib/ 2>/dev/null || echo "lib not found"
+        ls -la $MUMPS_DIR/lib64/ 2>/dev/null || echo "lib64 not found"
 
         cmake .. \
           -G Ninja \
