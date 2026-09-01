@@ -86,6 +86,15 @@ jobs:
         cmake --build $HOME/mumps-build --parallel 4
         cmake --install $HOME/mumps-build
 
+        # --- FIX: scivision/mumps installs to lib64 on some systems ---
+        echo "=== MUMPS install tree ==="
+        find $HOME/mumps-install -type f -name "*.a" | head -20
+
+        if [ -d "$HOME/mumps-install/lib64" ] && [ ! -d "$HOME/mumps-install/lib" ]; then
+          ln -s lib64 $HOME/mumps-install/lib
+          echo "Created symlink lib -> lib64"
+        fi
+
         test -f $HOME/mumps-install/lib/libdmumps.a
         echo "MUMPS_DIR=$HOME/mumps-install" >> $GITHUB_ENV
 
