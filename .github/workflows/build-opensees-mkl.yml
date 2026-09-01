@@ -23,7 +23,8 @@ jobs:
       - name: Install system dependencies
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eo pipefail
+          set -u
           sudo apt-get update
           sudo apt-get install -y \
             build-essential gcc g++ gfortran git ninja-build wget curl ca-certificates gnupg \
@@ -36,7 +37,8 @@ jobs:
       - name: Install Intel oneAPI 2026.0 from Intel APT repository
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eo pipefail
+          set -u
           wget -qO- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
             | gpg --dearmor \
             | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg >/dev/null
@@ -51,8 +53,9 @@ jobs:
       - name: Activate oneAPI and prove exact 2026.0 MKL/ifx/MPI
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eo pipefail
           source /opt/intel/oneapi/setvars.sh --force
+          set -u
           echo "MKLROOT=$MKLROOT"
           echo "I_MPI_ROOT=$I_MPI_ROOT"
           command -v ifx
@@ -69,8 +72,9 @@ jobs:
       - name: Build MUMPS 5.5.1 with ifx + MPI + OpenMP + MKL ScaLAPACK
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eo pipefail
           source /opt/intel/oneapi/setvars.sh --force
+          set -u
           rm -rf "$HOME/mumps-src" "$HOME/mumps-build" "$HOME/mumps-install"
           git clone --depth 1 https://github.com/OpenSees/mumps.git "$HOME/mumps-src"
           cmake -S "$HOME/mumps-src" -B "$HOME/mumps-build" -G Ninja \
@@ -95,8 +99,9 @@ jobs:
       - name: Configure OpenSees with MKL forced as LAPACK/BLAS
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eo pipefail
           source /opt/intel/oneapi/setvars.sh --force
+          set -u
           rm -rf "$GITHUB_WORKSPACE/build"
           mkdir "$GITHUB_WORKSPACE/build"
           cd "$GITHUB_WORKSPACE/build"
@@ -134,7 +139,8 @@ jobs:
       - name: Verify requested targets exist
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eo pipefail
+          set -u
           cd "$GITHUB_WORKSPACE/build"
           cmake --build . --target help | tee targets.txt
           grep -E 'OpenSeesSP|(^|[[:space:]])OpenSees([[:space:]]|$)' targets.txt
@@ -142,8 +148,9 @@ jobs:
       - name: Build OpenSees only
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eo pipefail
           source /opt/intel/oneapi/setvars.sh --force
+          set -u
           cd "$GITHUB_WORKSPACE/build"
           cmake --build . --target OpenSees --parallel 4 --verbose 2>&1 | tee "$GITHUB_WORKSPACE/OpenSees-build.log"
           test -x ./OpenSees
@@ -151,8 +158,9 @@ jobs:
       - name: Build OpenSeesSP only
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eo pipefail
           source /opt/intel/oneapi/setvars.sh --force
+          set -u
           cd "$GITHUB_WORKSPACE/build"
           cmake --build . --target OpenSeesSP --parallel 4 --verbose 2>&1 | tee "$GITHUB_WORKSPACE/OpenSeesSP-build.log"
           test -x ./OpenSeesSP
@@ -160,7 +168,8 @@ jobs:
       - name: Prove final link commands use static MKL and no Netlib
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eo pipefail
+          set -u
           cd "$GITHUB_WORKSPACE/build"
           for target in OpenSees OpenSeesSP; do
             echo "===== LINK COMMANDS: $target ====="
@@ -178,7 +187,8 @@ jobs:
       - name: Verify MKL inside final binaries
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eo pipefail
+          set -u
           cd "$GITHUB_WORKSPACE/build"
           for target in OpenSees OpenSeesSP; do
             echo "===== MKL strings: $target ====="
@@ -191,15 +201,17 @@ jobs:
       - name: Runtime test OpenSees
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eo pipefail
+          set -u
           cd "$GITHUB_WORKSPACE/build"
           printf 'puts {OpenSees is working}\nexit\n' | ./OpenSees
 
       - name: Runtime test OpenSeesSP + MUMPS
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eo pipefail
           source /opt/intel/oneapi/setvars.sh --force
+          set -u
           cd "$GITHUB_WORKSPACE/build"
           printf 'system Mumps\nputs {MUMPS solver OK}\nexit\n' > /tmp/test_mumps.tcl
           mpirun --allow-run-as-root -np 2 ./OpenSeesSP /tmp/test_mumps.tcl
@@ -207,7 +219,8 @@ jobs:
       - name: Package only OpenSees and OpenSeesSP
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eo pipefail
+          set -u
           cd "$GITHUB_WORKSPACE/build"
           mkdir -p "$GITHUB_WORKSPACE/opensees-binaries"
           cp ./OpenSees ./OpenSeesSP "$GITHUB_WORKSPACE/opensees-binaries/"
