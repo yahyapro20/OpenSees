@@ -53,7 +53,7 @@ jobs:
           echo '/opt/intel/oneapi/compiler/2025.1/lib' | sudo tee /etc/ld.so.conf.d/intel-oneapi.conf
           sudo ldconfig
 
-      - name: "6. Build MUMPS"
+      - name: "6. Build MUMPS (Skipping Harmless Test Errors)"
         run: |
           mkdir -p ~/opensees-build
           cd ~/opensees-build
@@ -61,6 +61,8 @@ jobs:
           cd mumps
           mkdir build && cd build
           source /opt/intel/oneapi/setvars.sh --force > /dev/null 2>&1
+          
+          # اضافه شدن -DBUILD_TESTING=OFF برای جلوگیری از خطای بی‌اهمیت -fiopenmp در GCC
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_Fortran_COMPILER=ifx \
@@ -68,7 +70,9 @@ jobs:
             -DCMAKE_CXX_COMPILER=g++ \
             -DMUMPS_parallel=ON \
             -DMUMPS_openmp=ON \
+            -DBUILD_TESTING=OFF \
             -DCMAKE_INSTALL_PREFIX=~/opensees-build/mumps/install
+            
           cmake --build . --parallel $(nproc)
           cmake --install .
 
