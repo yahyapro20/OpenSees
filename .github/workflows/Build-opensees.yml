@@ -1,13 +1,13 @@
-name: "Build OpenSees & OpenSeesSP (Strict MKL Verification)"
+name: "Build OpenSees & OpenSeesSP (Optimized & Clean)"
 
 on:
-  workflow_dispatch: # فقط به‌صورت دستی اجرا می‌شود
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: "1. Update System & Install Dependencies"
+      - name: "1. System Dependencies"
         run: |
           sudo apt update && sudo apt upgrade -y
           sudo apt install -y \
@@ -16,142 +16,107 @@ jobs:
             libopenmpi-dev openmpi-bin libhdf5-dev tcl-dev tk-dev \
             libtk8.6 libeigen3-dev libssl-dev numactl hwloc
 
-      - name: "2. Install Latest CMake (Kitware)"
+      - name: "2. Latest CMake (Kitware)"
         run: |
           sudo apt remove cmake -y
           wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | \
-              gpg --dearmor - | \
-              sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null
+              gpg --dearmor - | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null
           echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ jammy main' | \
               sudo tee /etc/apt/sources.list.d/kitware.list >/dev/null
-          sudo apt update
-          sudo apt install cmake -y
-          cmake --version
+          sudo apt update && sudo apt install cmake -y
 
-      - name: "3. Install Conan"
+      - name: "3. Conan & Intel oneAPI Setup"
         run: |
           pip3 install conan
           echo "$HOME/.local/bin" >> $GITHUB_PATH
-
-      - name: "4. Install Intel oneAPI (MKL + MPI + Fortran)"
-        run: |
+          
           wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | \
-              gpg --dearmor | \
-              sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null
+              gpg --dearmor | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null
           echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" | \
               sudo tee /etc/apt/sources.list.d/oneAPI.list
           sudo apt update
           sudo apt install -y \
-              intel-oneapi-mkl \
-              intel-oneapi-mkl-devel \
+              intel-oneapi-mkl intel-oneapi-mkl-devel \
               intel-oneapi-compiler-fortran-2025.1 \
-              intel-oneapi-mpi \
-              intel-oneapi-mpi-devel
-
-      - name: "5. Configure Intel Library Path (ldconfig)"
-        run: |
+              intel-oneapi-mpi intel-oneapi-mpi-devel
+              
           echo '/opt/intel/oneapi/compiler/2025.1/lib' | sudo tee /etc/ld.so.conf.d/intel-oneapi.conf
           sudo ldconfig
 
-      - name: "6. Build MUMPS (Ignoring Harmless Test Errors)"
+      - name: "4. Build MUMPS (Clean & Fast)"
         run: |
-          mkdir -p ~/opensees-build
-          cd ~/opensees-build
+          mkdir -p ~/opensees-build && cd ~/opensees-build
           git clone https://github.com/scivision/mumps.git mumps
-          cd mumps
-          mkdir build && cd build
+          cd mumps && mkdir build && cd build
           source /opt/intel/oneapi/setvars.sh --force > /dev/null 2>&1
           
-          # برای MUMPS همچنان از ifx استفاده می‌کنیم چون کد مدرن‌تری دارد
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_Fortran_COMPILER=ifx \
-            -DCMAKE_C_COMPILER=gcc \
-            -DCMAKE_CXX_COMPILER=g++ \
-            -DMUMPS_parallel=ON \
-            -DMUMPS_openmp=ON \
+            -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ \
+            -DMUMPS_parallel=ON -DMUMPS_openmp=ON \
             -DBUILD_TESTING=OFF \
             -DCMAKE_INSTALL_PREFIX=~/opensees-build/mumps/install
             
-          cmake --build . --parallel $(nproc) || echo "⚠️ Build returned non-zero (likely test errors). Ignoring."
+          cmake --build . --parallel $(nproc) || echo "⚠️ Ignoring harmless test errors."
           cmake --install .
           
-          echo "=== Verifying MUMPS Installation ==="
-          if [ ! -f ~/opensees-build/mumps/install/lib/libdmumps.a ]; then
-            echo "🚨 CRITICAL: libdmumps.a was not built!"
-            exit 1
-          fi
-          echo "✅ MUMPS libraries successfully built and installed."
+          if [ ! -f ~/opensees-build/mumps/install/lib/libdmumps.a ]; then echo "🚨 MUMPS failed!"; exit 1; fi
 
-      - name: "7. Clone & Configure OpenSees (Your Fork - FIXED FORTRAN COMPILER)"
+      - name: "5. Configure OpenSees (No -flto, No Warnings)"
         run: |
           cd ~/opensees-build
           git clone https://github.com/yahyapro20/OpenSees.git
-          cd OpenSees
-          mkdir build && cd build
-          
+          cd OpenSees && mkdir build && cd build
           source /opt/intel/oneapi/setvars.sh --force > /dev/null 2>&1
           
-          echo "=== Checking MKLROOT before CMake ==="
-          echo "MKLROOT is: $MKLROOT"
-          
-          # 🔴 تغییر حیاتی: استفاده از gfortran به جای ifx برای جلوگیری از خطای لینک توابع Fortran قدیمی
+          # 🔴 تغییرات حیاتی: 
+          # 1. حذف -flto برای جلوگیری از پر شدن رم 7GB گیت‌هاب در مرحله لینک (خطای 100%)
+          # 2. اضافه شدن -w برای حذف کامل هشدارهای خسته‌کننده و افزایش سرعت کامپایل
+          # 3. استفاده از gfortran برای جلوگیری از خطای لینک کدهای قدیمی Fortran
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=gcc \
             -DCMAKE_CXX_COMPILER=g++ \
             -DCMAKE_Fortran_COMPILER=gfortran \
-            -DCMAKE_C_FLAGS="-O3 -march=native -mavx2 -flto" \
-            -DCMAKE_CXX_FLAGS="-O3 -march=native -mavx2 -flto" \
-            -DCMAKE_Fortran_FLAGS="-O3 -march=native -mavx2 -flto" \
+            -DCMAKE_C_FLAGS="-O3 -march=native -mavx2 -w" \
+            -DCMAKE_CXX_FLAGS="-O3 -march=native -mavx2 -w" \
+            -DCMAKE_Fortran_FLAGS="-O3 -march=native -mavx2 -w" \
             -DBLA_VENDOR=Intel10_64lp \
             -DMKL_LINK=static \
             -DMKL_INTERFACE_FULL=intel_lp64 \
             -DMUMPS_DIR="$HOME/opensees-build/mumps/install" \
             -DCMAKE_INSTALL_PREFIX="$HOME/opensees-build/install"
 
-      - name: "8. Build OpenSees & OpenSeesSP Targets"
+      - name: "6. Build Targets"
         run: |
           cd ~/opensees-build/OpenSees/build
           source /opt/intel/oneapi/setvars.sh --force > /dev/null 2>&1
-          echo "=== Building OpenSees (Serial) ==="
           cmake --build . --target OpenSees --parallel $(nproc)
-          echo "=== Building OpenSeesSP (Parallel) ==="
           cmake --build . --target OpenSeesSP --parallel $(nproc)
 
-      - name: "9. STRICT VERIFICATION: Is MKL Really Linked?"
+      - name: "7. Strict MKL Verification (Takes 0.1s)"
         run: |
           cd ~/opensees-build/OpenSees/build
-          echo "=== Scanning OpenSeesSP binary for MKL signature ==="
-          
           MKL_CHECK=$(strings ./OpenSeesSP | grep -i "Math Kernel Library" || true)
-          
           if [ -z "$MKL_CHECK" ]; then
-            echo "CRITICAL FAILURE: MKL was NOT linked!"
-            echo "The build fell back to default Netlib BLAS/LAPACK (dead slow)."
-            echo "Action: Workflow will now FAIL to prevent downloading a useless binary."
-            exit 1
+            echo "🚨 CRITICAL: MKL NOT linked! Fallback to Netlib."; exit 1
           else
-            echo "SUCCESS: MKL is correctly and statically linked!"
-            echo "Found signature: $MKL_CHECK"
+            echo "✅ SUCCESS: MKL statically linked -> $MKL_CHECK"
           fi
 
-      - name: "10. Runtime Execution Test"
+      - name: "8. Runtime Execution Test"
         run: |
           cd ~/opensees-build/OpenSees/build
           source /opt/intel/oneapi/setvars.sh --force > /dev/null 2>&1
-          
-          echo "=== Testing OpenSees Serial ==="
-          echo 'puts {OpenSees Serial is working}; exit' | ./OpenSees
-          
-          echo "=== Testing OpenSeesSP with MUMPS ==="
-          echo 'system Mumps; puts {MUMPS solver OK}; exit' > /tmp/test_mumps.tcl
-          mpirun --allow-run-as-root -np 2 ./OpenSeesSP /tmp/test_mumps.tcl
+          echo 'puts {OpenSees Serial OK}; exit' | ./OpenSees
+          echo 'system Mumps; puts {MUMPS Parallel OK}; exit' > /tmp/test.tcl
+          mpirun --allow-run-as-root -np 2 ./OpenSeesSP /tmp/test.tcl
 
-      - name: "11. Upload Artifacts (For Manual Download)"
+      - name: "9. Upload Artifacts"
         uses: actions/upload-artifact@v4
         with:
-          name: OpenSees-Build-Ubuntu22.04-MKL-Verified
+          name: OpenSees-Build-Ubuntu22.04-Optimized
           path: |
             ~/opensees-build/OpenSees/build/OpenSees
             ~/opensees-build/OpenSees/build/OpenSeesSP
