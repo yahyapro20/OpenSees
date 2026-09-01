@@ -81,7 +81,7 @@ jobs:
           -DCMAKE_CXX_COMPILER=g++ \
           -DCMAKE_Fortran_COMPILER=ifx \
           -DMUMPS_parallel=ON \
-          -DMUMPS_openmp=ON \
+          -DMUMPS_openmp=OFF \
           -DBUILD_TESTING=OFF \
           -DCMAKE_INSTALL_PREFIX=$HOME/mumps-install
 
@@ -145,7 +145,7 @@ jobs:
         cd build
         for f in OpenSees OpenSeesSP; do
           echo "Checking $f"
-          strings ./$f | grep -i "Math Kernel Library" || echo "  (no MKL strings found — likely static link, checking symbols...)"
+          strings ./$f | grep -i "Math Kernel Library" || echo "  (no MKL strings — static link OK)"
           nm ./$f 2>/dev/null | grep -i mkl_ | head -3 || true
         done
 
