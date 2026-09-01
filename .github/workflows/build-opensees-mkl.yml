@@ -8,184 +8,167 @@ permissions:
 
 jobs:
   build:
-    name: Ubuntu 22.04 / Intel MKL 2026.0 / MUMPS 5.5.1
+    name: Ubuntu 22.04 / Intel oneAPI 2026 / MUMPS 5.5.1
     runs-on: ubuntu-22.04
     timeout-minutes: 180
 
     steps:
-      - name: Checkout fork source
+      - name: Checkout fork
         uses: actions/checkout@v4
         with:
           repository: yahyapro20/OpenSees
           ref: master
           fetch-depth: 0
 
-      - name: Install build dependencies
+      - name: Install system dependencies
+        shell: bash
         run: |
+          set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential gcc g++ gfortran git ninja-build pkg-config \
-            wget curl python3 python3-pip \
-            liblapack-dev libblas-dev \
-            libopenmpi-dev openmpi-bin \
-            libhdf5-dev tcl-dev tk-dev libtk8.6 libeigen3-dev \
-            libssl-dev numactl hwloc gnupg
-
-      - name: Install current CMake from Kitware
-        run: |
-          wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null \
-            | gpg --dearmor \
-            | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null
-          echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ jammy main' \
-            | sudo tee /etc/apt/sources.list.d/kitware.list >/dev/null
-          sudo apt-get update
-          sudo apt-get install -y cmake
+            build-essential gcc g++ gfortran git ninja-build wget curl ca-certificates gnupg \
+            libhdf5-dev tcl-dev tk-dev libeigen3-dev \
+            libopenmpi-dev openmpi-bin zlib1g-dev libssl-dev numactl hwloc
           cmake --version
+          gcc --version | head -1
+          g++ --version | head -1
 
-      - name: Install Conan
+      - name: Install Intel oneAPI 2026 from Intel APT repository
+        shell: bash
         run: |
-          python3 -m pip install --user conan
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/conan" --version
-
-      - name: Install Intel oneAPI MKL 2026.0 + MPI + Fortran
-        run: |
-          wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
+          set -euxo pipefail
+          wget -qO- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
             | gpg --dearmor \
             | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg >/dev/null
           echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" \
             | sudo tee /etc/apt/sources.list.d/oneAPI.list >/dev/null
           sudo apt-get update
           sudo apt-get install -y \
-            intel-oneapi-mkl-2026.0 \
-            intel-oneapi-mkl-devel-2026.0 \
-            intel-oneapi-compiler-fortran-2025.1 \
-            intel-oneapi-mpi \
+            intel-oneapi-mkl-devel \
+            intel-oneapi-compiler-fortran \
             intel-oneapi-mpi-devel
 
-      - name: Activate oneAPI and verify environment
+      - name: Activate oneAPI and prove MKL/ifx/MPI are present
         shell: bash
         run: |
+          set -euxo pipefail
           source /opt/intel/oneapi/setvars.sh --force
-          echo "PATH=$PATH"
           echo "MKLROOT=$MKLROOT"
           echo "I_MPI_ROOT=$I_MPI_ROOT"
-          echo "ifx=$(ifx --version | head -1)"
-          echo "cmake=$(cmake --version | head -1)"
-          echo "mpi=$(mpirun --version 2>&1 | head -1)"
-          test -n "$MKLROOT"
-          test "$MKLROOT" = "/opt/intel/oneapi/mkl/2026.0"
-          test -x "$(command -v ifx)"
+          command -v ifx
+          command -v mpirun
+          ifx --version | head -3
+          mpirun --version | head -2
+          test -d "$MKLROOT"
+          test -f "$MKLROOT/lib/intel64/libmkl_intel_lp64.a"
+          test -f "$MKLROOT/lib/intel64/libmkl_sequential.a"
+          test -f "$MKLROOT/lib/intel64/libmkl_core.a"
+          printf 'MKLROOT=%s\nI_MPI_ROOT=%s\n' "$MKLROOT" "$I_MPI_ROOT" >> "$GITHUB_ENV"
 
-          {
-            echo "MKLROOT=$MKLROOT"
-            echo "I_MPI_ROOT=$I_MPI_ROOT"
-          } >> "$GITHUB_ENV"
-
-      - name: Build MUMPS 5.5.1
+      - name: Build MUMPS 5.5.1 with ifx + MPI + OpenMP
         shell: bash
         run: |
+          set -euxo pipefail
           source /opt/intel/oneapi/setvars.sh --force
-          mkdir -p "$HOME/opensees-build"
-          cd "$HOME/opensees-build"
-          git clone https://github.com/scivision/mumps.git mumps
-          cd mumps
-          mkdir build
-          cd build
-          cmake .. \
-            -G Ninja \
+          rm -rf "$HOME/mumps-src" "$HOME/mumps-build" "$HOME/mumps-install"
+          git clone --depth 1 https://github.com/OpenSees/mumps.git "$HOME/mumps-src"
+          cmake -S "$HOME/mumps-src" -B "$HOME/mumps-build" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_Fortran_COMPILER=ifx \
             -DCMAKE_C_COMPILER=gcc \
-            -DCMAKE_CXX_COMPILER=g++ \
+            -DCMAKE_Fortran_COMPILER=ifx \
             -DMUMPS_UPSTREAM_VERSION=5.5.1 \
             -DMUMPS_parallel=ON \
             -DMUMPS_openmp=ON \
+            -DMUMPS_scalapack=OFF \
+            -DMUMPS_BUILD_TESTING=OFF \
             -DBUILD_SHARED_LIBS=OFF \
-            -DCMAKE_INSTALL_PREFIX="$HOME/opensees-build/mumps/install"
-          cmake --build . --parallel 4
-          cmake --install .
-          test -f "$HOME/opensees-build/mumps/install/lib/libdmumps.a"
-          test -f "$HOME/opensees-build/mumps/install/lib/libmumps_common.a"
-          test -f "$HOME/opensees-build/mumps/install/lib/libpord.a"
+            -DCMAKE_INSTALL_PREFIX="$HOME/mumps-install"
+          cmake --build "$HOME/mumps-build" --parallel 4
+          cmake --install "$HOME/mumps-build"
+          test -f "$HOME/mumps-install/lib/libdmumps.a"
+          test -f "$HOME/mumps-install/lib/libmumps_common.a"
+          test -f "$HOME/mumps-install/lib/libpord.a"
+          printf 'MUMPS_DIR=%s\n' "$HOME/mumps-install" >> "$GITHUB_ENV"
 
       - name: Configure OpenSees with MKL forced as LAPACK/BLAS
         shell: bash
         run: |
+          set -euxo pipefail
           source /opt/intel/oneapi/setvars.sh --force
-          cd "$GITHUB_WORKSPACE"
-          rm -rf build
-          mkdir build
-          cd build
+          rm -rf "$GITHUB_WORKSPACE/build"
+          mkdir "$GITHUB_WORKSPACE/build"
+          cd "$GITHUB_WORKSPACE/build"
 
-          # The guide's BLA_VENDOR=Intel10_64lp is important: CMake is told
-          # to search specifically for Intel MKL rather than arbitrary BLAS/LAPACK.
-          cmake .. \
-            -G Ninja \
+          MKL_LIB="$MKLROOT/lib/intel64"
+          # OpenSees CMake skips find_package(LAPACK) when LAPACK_LIBRARIES is defined.
+          # This explicit list therefore prevents silent Ubuntu Netlib fallback.
+          MKL_LINK="${MKL_LIB}/libmkl_intel_lp64.a;${MKL_LIB}/libmkl_sequential.a;${MKL_LIB}/libmkl_core.a;-lpthread;-lm;-ldl"
+
+          cmake .. -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=gcc \
             -DCMAKE_CXX_COMPILER=g++ \
             -DCMAKE_Fortran_COMPILER=ifx \
-            -DCMAKE_C_FLAGS="-O3 -mavx2 -mfma -flto" \
-            -DCMAKE_CXX_FLAGS="-O3 -mavx2 -mfma -flto" \
-            -DCMAKE_Fortran_FLAGS="-O3 -mavx2 -flto" \
-            -DBLA_VENDOR=Intel10_64lp \
-            -DBLA_STATIC=ON \
-            -DMKL_LINK=static \
-            -DMKL_INTERFACE_FULL=intel_lp64 \
-            -DMUMPS_DIR="$HOME/opensees-build/mumps/install" \
-            -DCMAKE_INSTALL_PREFIX="$HOME/opensees-build/install"
+            -DCMAKE_C_FLAGS="-O3 -mavx2 -mfma" \
+            -DCMAKE_CXX_FLAGS="-O3 -mavx2 -mfma" \
+            -DCMAKE_Fortran_FLAGS="-O3 -mavx2 -mfma" \
+            -DLAPACK_LIBRARIES="$MKL_LINK" \
+            -DBLAS_LIBRARIES="$MKL_LINK" \
+            -DMUMPS_DIR="$MUMPS_DIR"
 
-          echo '=== MKL/LAPACK configure evidence ==='
-          grep -E 'Found (BLAS|LAPACK)|MKL was found|LAPACK_LIBRARIES|BLAS_LIBRARIES|MKLROOT|SCALAPACK_LIBRARIES' CMakeFiles/CMakeOutput.log CMakeCache.txt CMakeFiles/*.log 2>/dev/null || true
+          echo '===== MKL CONFIGURATION ====='
+          printf 'MKLROOT=%s\n' "$MKLROOT"
+          grep -E '^(LAPACK|BLAS).*=' CMakeCache.txt || true
+          grep -R -E '/opt/intel/oneapi/mkl/.*/libmkl_|libmkl_(intel_lp64|sequential|core)' CMakeFiles CMakeCache.txt || true
 
-          # Hard fail if configure selected the Ubuntu Netlib BLAS/LAPACK path.
           if grep -R -E '/usr/lib/x86_64-linux-gnu/lib(blas|lapack)(\.so|\.so\.)' CMakeFiles CMakeCache.txt 2>/dev/null; then
-            echo 'ERROR: Ubuntu Netlib BLAS/LAPACK was selected.'
+            echo 'FATAL: Ubuntu Netlib BLAS/LAPACK detected.'
             exit 1
           fi
 
-          if ! grep -R -E '/opt/intel/oneapi/mkl/.*/libmkl_' CMakeFiles CMakeCache.txt 2>/dev/null; then
-            echo 'ERROR: Could not find MKL library paths in CMake configure/build metadata.'
-            exit 1
-          fi
+          grep -R -E '/opt/intel/oneapi/mkl/.*/libmkl_intel_lp64\.a' CMakeFiles CMakeCache.txt >/dev/null
+          grep -R -E '/opt/intel/oneapi/mkl/.*/libmkl_core\.a' CMakeFiles CMakeCache.txt >/dev/null
 
-      - name: Verify required targets exist
+      - name: Verify requested targets exist
         shell: bash
         run: |
+          set -euxo pipefail
           cd "$GITHUB_WORKSPACE/build"
           cmake --build . --target help | tee targets.txt
-          grep -E '^\.\.\. OpenSees($|[[:space:]])|OpenSeesSP' targets.txt
+          grep -E 'OpenSeesSP|(^|[[:space:]])OpenSees([[:space:]]|$)' targets.txt
 
-      - name: Build OpenSees and OpenSeesSP only
+      - name: Build OpenSees only
         shell: bash
         run: |
+          set -euxo pipefail
           source /opt/intel/oneapi/setvars.sh --force
           cd "$GITHUB_WORKSPACE/build"
-          cmake --build . --target OpenSees --parallel 4 --verbose 2>&1 | tee ../OpenSees-build.log
-          cmake --build . --target OpenSeesSP --parallel 4 --verbose 2>&1 | tee ../OpenSeesSP-build.log
+          cmake --build . --target OpenSees --parallel 4 --verbose 2>&1 | tee "$GITHUB_WORKSPACE/OpenSees-build.log"
           test -x ./OpenSees
-          test -x ./OpenSeesSP
 
-      - name: Prove the final link commands use MKL, not Netlib
+      - name: Build OpenSeesSP only
         shell: bash
         run: |
+          set -euxo pipefail
+          source /opt/intel/oneapi/setvars.sh --force
           cd "$GITHUB_WORKSPACE/build"
+          cmake --build . --target OpenSeesSP --parallel 4 --verbose 2>&1 | tee "$GITHUB_WORKSPACE/OpenSeesSP-build.log"
+          test -x ./OpenSeesSP
 
-          echo '=== OpenSees link commands ==='
-          ninja -t commands OpenSees | grep -E 'libmkl_|mkl_intel_lp64|mkl_core|mkl_sequential' | tail -20
-          echo '=== OpenSeesSP link commands ==='
-          ninja -t commands OpenSeesSP | grep -E 'libmkl_|mkl_intel_lp64|mkl_core|mkl_sequential' | tail -20
-
+      - name: Prove final link commands use static MKL and no Netlib
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$GITHUB_WORKSPACE/build"
           for target in OpenSees OpenSeesSP; do
-            echo "=== Checking $target ==="
+            echo "===== LINK COMMANDS: $target ====="
             commands="$(ninja -t commands "$target")"
-            echo "$commands" | grep -q '/opt/intel/oneapi/mkl/' || {
-              echo "ERROR: $target link command does not contain an Intel MKL path."
-              exit 1
-            }
+            echo "$commands" | grep -E 'libmkl_(intel_lp64|sequential|core)\.a' | tail -20
+            echo "$commands" | grep -q '/opt/intel/oneapi/mkl/'
+            echo "$commands" | grep -q 'libmkl_intel_lp64.a'
+            echo "$commands" | grep -q 'libmkl_core.a'
             if echo "$commands" | grep -E -q '/usr/lib/x86_64-linux-gnu/lib(blas|lapack)(\.so|\.so\.)'; then
-              echo "ERROR: $target contains Ubuntu Netlib BLAS/LAPACK."
+              echo "FATAL: $target contains Ubuntu Netlib BLAS/LAPACK."
               exit 1
             fi
           done
@@ -193,48 +176,48 @@ jobs:
       - name: Verify MKL inside final binaries
         shell: bash
         run: |
+          set -euxo pipefail
           cd "$GITHUB_WORKSPACE/build"
           for target in OpenSees OpenSeesSP; do
-            echo "=== strings: $target ==="
-            strings "./$target" | grep -i -E 'Math Kernel Library|mkl_(intel_lp64|core|sequential)' | head -20 || true
+            echo "===== MKL strings: $target ====="
+            strings "./$target" | grep -i -E 'Math Kernel Library|Intel.*MKL|mkl_(intel_lp64|sequential|core)' | head -30
+            echo "===== MKL symbols: $target ====="
+            nm -A "./$target" 2>/dev/null | grep -E 'mkl_(dgemm|dgetrf|dpotrf)' | head -20 || true
           done
+          strings ./OpenSeesSP | grep -i 'Math Kernel Library'
 
-          # The guide's exact check. Keep it explicit for OpenSeesSP.
-          strings ./OpenSeesSP | grep -i "Math Kernel Library" || {
-            echo 'ERROR: OpenSeesSP does not contain the expected MKL identification string.'
-            exit 1
-          }
-
-      - name: Runtime sanity test OpenSees
+      - name: Runtime test OpenSees
         shell: bash
         run: |
+          set -euxo pipefail
           cd "$GITHUB_WORKSPACE/build"
-          echo 'puts {OpenSees is working}; exit' | ./OpenSees
+          printf 'puts {OpenSees is working}\nexit\n' | ./OpenSees
 
-      - name: Runtime sanity test OpenSeesSP + MUMPS
+      - name: Runtime test OpenSeesSP + MUMPS
         shell: bash
         run: |
+          set -euxo pipefail
+          source /opt/intel/oneapi/setvars.sh --force
           cd "$GITHUB_WORKSPACE/build"
           printf 'system Mumps\nputs {MUMPS solver OK}\nexit\n' > /tmp/test_mumps.tcl
-          mpirun -np 2 ./OpenSeesSP /tmp/test_mumps.tcl
+          mpirun --allow-run-as-root -np 2 ./OpenSeesSP /tmp/test_mumps.tcl
 
-      - name: Package only the two requested binaries
+      - name: Package only OpenSees and OpenSeesSP
         shell: bash
         run: |
+          set -euxo pipefail
           cd "$GITHUB_WORKSPACE/build"
-          mkdir -p ../opensees-binaries
-          cp ./OpenSees ./OpenSeesSP ../opensees-binaries/
-          cp ../OpenSees-build.log ../OpenSeesSP-build.log ../opensees-binaries/
-          printf 'OpenSees source: https://github.com/yahyapro20/OpenSees\n' > ../opensees-binaries/BUILD-INFO.txt
-          printf 'MUMPS: 5.5.1\nMKL: %s\n' "$MKLROOT" >> ../opensees-binaries/BUILD-INFO.txt
-          tar -C ../opensees-binaries -czf ../OpenSees-MKL-MUMPS-binaries.tar.gz .
-          ls -lh ../OpenSees-MKL-MUMPS-binaries.tar.gz ../opensees-binaries/OpenSees ../opensees-binaries/OpenSeesSP
+          mkdir -p "$GITHUB_WORKSPACE/opensees-binaries"
+          cp ./OpenSees ./OpenSeesSP "$GITHUB_WORKSPACE/opensees-binaries/"
+          cp "$GITHUB_WORKSPACE/OpenSees-build.log" "$GITHUB_WORKSPACE/OpenSeesSP-build.log" "$GITHUB_WORKSPACE/opensees-binaries/"
+          printf 'Source: https://github.com/yahyapro20/OpenSees\nMKLROOT=%s\nMUMPS=5.5.1\nTargets=OpenSees,OpenSeesSP\n' "$MKLROOT" > "$GITHUB_WORKSPACE/opensees-binaries/BUILD-INFO.txt"
+          tar -C "$GITHUB_WORKSPACE/opensees-binaries" -czf "$GITHUB_WORKSPACE/OpenSees-MKL-MUMPS.tar.gz" .
+          ls -lh "$GITHUB_WORKSPACE/OpenSees-MKL-MUMPS.tar.gz"
 
-      - name: Upload binaries as workflow artifact (no GitHub Release)
+      - name: Upload workflow artifact only (no Release)
         uses: actions/upload-artifact@v4
         with:
           name: OpenSees-MKL-MUMPS-ubuntu22.04
-          path: |
-            OpenSees-MKL-MUMPS-binaries.tar.gz
+          path: OpenSees-MKL-MUMPS.tar.gz
           retention-days: 7
           if-no-files-found: error
