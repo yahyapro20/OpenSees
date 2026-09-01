@@ -62,6 +62,7 @@ jobs:
           mkdir build && cd build
           source /opt/intel/oneapi/setvars.sh --force > /dev/null 2>&1
           
+          # برای MUMPS همچنان از ifx استفاده می‌کنیم چون کد مدرن‌تری دارد
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_Fortran_COMPILER=ifx \
@@ -72,22 +73,17 @@ jobs:
             -DBUILD_TESTING=OFF \
             -DCMAKE_INSTALL_PREFIX=~/opensees-build/mumps/install
             
-          # اجرای بیلد - اگر تست‌ها خطا دادند، نادیده می‌گیریم تا کتابخانه‌های اصلی نصب شوند
-          cmake --build . --parallel $(nproc) || echo "⚠️ Build returned non-zero (likely test errors with -fiopenmp). Ignoring as per guide."
-          
-          # نصب کتابخانه‌های اصلی
+          cmake --build . --parallel $(nproc) || echo "⚠️ Build returned non-zero (likely test errors). Ignoring."
           cmake --install .
           
-          # بررسی اینکه فایل‌های اصلی واقعاً ساخته شده‌اند
           echo "=== Verifying MUMPS Installation ==="
-          ls -la ~/opensees-build/mumps/install/lib/
           if [ ! -f ~/opensees-build/mumps/install/lib/libdmumps.a ]; then
             echo "🚨 CRITICAL: libdmumps.a was not built!"
             exit 1
           fi
           echo "✅ MUMPS libraries successfully built and installed."
 
-      - name: "7. Clone & Configure OpenSees (Your Fork)"
+      - name: "7. Clone & Configure OpenSees (Your Fork - FIXED FORTRAN COMPILER)"
         run: |
           cd ~/opensees-build
           git clone https://github.com/yahyapro20/OpenSees.git
@@ -99,11 +95,12 @@ jobs:
           echo "=== Checking MKLROOT before CMake ==="
           echo "MKLROOT is: $MKLROOT"
           
+          # 🔴 تغییر حیاتی: استفاده از gfortran به جای ifx برای جلوگیری از خطای لینک توابع Fortran قدیمی
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=gcc \
             -DCMAKE_CXX_COMPILER=g++ \
-            -DCMAKE_Fortran_COMPILER=ifx \
+            -DCMAKE_Fortran_COMPILER=gfortran \
             -DCMAKE_C_FLAGS="-O3 -march=native -mavx2 -flto" \
             -DCMAKE_CXX_FLAGS="-O3 -march=native -mavx2 -flto" \
             -DCMAKE_Fortran_FLAGS="-O3 -march=native -mavx2 -flto" \
@@ -133,7 +130,6 @@ jobs:
             echo "CRITICAL FAILURE: MKL was NOT linked!"
             echo "The build fell back to default Netlib BLAS/LAPACK (dead slow)."
             echo "Action: Workflow will now FAIL to prevent downloading a useless binary."
-            echo "Fix: Check that 'source /opt/intel/oneapi/setvars.sh' ran successfully before cmake."
             exit 1
           else
             echo "SUCCESS: MKL is correctly and statically linked!"
