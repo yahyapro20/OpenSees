@@ -51,7 +51,7 @@ jobs:
         sudo apt install -y \
           intel-oneapi-mkl-devel-2026.0 \
           intel-oneapi-compiler-fortran-2026.0 \
-          intel-oneapi-mpi-devel-2026.0
+          intel-oneapi-mpi-devel
 
     - name: Verify Intel environment
       shell: bash
