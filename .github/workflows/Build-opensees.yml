@@ -1,4 +1,4 @@
-name: Build OpenSees & OpenSeesSP (Strict MKL Verification)
+name: "Build OpenSees & OpenSeesSP (Strict MKL Verification)"
 
 on:
   workflow_dispatch: # فقط به‌صورت دستی اجرا می‌شود
@@ -7,7 +7,7 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 1. Update System & Install Dependencies
+      - name: "1. Update System & Install Dependencies"
         run: |
           sudo apt update && sudo apt upgrade -y
           sudo apt install -y \
@@ -16,7 +16,7 @@ jobs:
             libopenmpi-dev openmpi-bin libhdf5-dev tcl-dev tk-dev \
             libtk8.6 libeigen3-dev libssl-dev numactl hwloc
 
-      - name: 2. Install Latest CMake (Kitware)
+      - name: "2. Install Latest CMake (Kitware)"
         run: |
           sudo apt remove cmake -y
           wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | \
@@ -28,12 +28,12 @@ jobs:
           sudo apt install cmake -y
           cmake --version
 
-      - name: 3. Install Conan
+      - name: "3. Install Conan"
         run: |
           pip3 install conan
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-      - name: 4. Install Intel oneAPI (MKL + MPI + Fortran)
+      - name: "4. Install Intel oneAPI (MKL + MPI + Fortran)"
         run: |
           wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | \
               gpg --dearmor | \
@@ -48,19 +48,18 @@ jobs:
               intel-oneapi-mpi \
               intel-oneapi-mpi-devel
 
-      - name: 5. Configure Intel Library Path (ldconfig)
+      - name: "5. Configure Intel Library Path (ldconfig)"
         run: |
           echo '/opt/intel/oneapi/compiler/2025.1/lib' | sudo tee /etc/ld.so.conf.d/intel-oneapi.conf
           sudo ldconfig
 
-      - name: 6. Build MUMPS
+      - name: "6. Build MUMPS"
         run: |
           mkdir -p ~/opensees-build
           cd ~/opensees-build
           git clone https://github.com/scivision/mumps.git mumps
           cd mumps
           mkdir build && cd build
-          # اجرای مستقیم setvars در همین شِل برای اطمینان از دسترسی به ifx
           source /opt/intel/oneapi/setvars.sh --force > /dev/null 2>&1
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
@@ -73,14 +72,13 @@ jobs:
           cmake --build . --parallel $(nproc)
           cmake --install .
 
-      - name: 7. Clone & Configure OpenSees (Your Fork)
+      - name: "7. Clone & Configure OpenSees (Your Fork)"
         run: |
           cd ~/opensees-build
           git clone https://github.com/yahyapro20/OpenSees.git
           cd OpenSees
           mkdir build && cd build
           
-          # حیاتی: source باید در همین بلاک و قبل از cmake اجرا شود تا MKLROOT ست شود
           source /opt/intel/oneapi/setvars.sh --force > /dev/null 2>&1
           
           echo "=== Checking MKLROOT before CMake ==="
@@ -100,7 +98,7 @@ jobs:
             -DMUMPS_DIR="$HOME/opensees-build/mumps/install" \
             -DCMAKE_INSTALL_PREFIX="$HOME/opensees-build/install"
 
-      - name: 8. Build OpenSees & OpenSeesSP Targets
+      - name: "8. Build OpenSees & OpenSeesSP Targets"
         run: |
           cd ~/opensees-build/OpenSees/build
           source /opt/intel/oneapi/setvars.sh --force > /dev/null 2>&1
@@ -109,26 +107,25 @@ jobs:
           echo "=== Building OpenSeesSP (Parallel) ==="
           cmake --build . --target OpenSeesSP --parallel $(nproc)
 
-      - name: 9. 🔴 STRICT VERIFICATION: Is MKL Really Linked?
+      - name: "9. STRICT VERIFICATION: Is MKL Really Linked?"
         run: |
           cd ~/opensees-build/OpenSees/build
           echo "=== Scanning OpenSeesSP binary for MKL signature ==="
           
-          # جستجوی رشته در باینری کامپایل‌شده
           MKL_CHECK=$(strings ./OpenSeesSP | grep -i "Math Kernel Library" || true)
           
           if [ -z "$MKL_CHECK" ]; then
-            echo "🚨 CRITICAL FAILURE: MKL was NOT linked!"
-            echo "The build fell back to default Netlib BLAS/LAPACK (deades slow)."
+            echo "CRITICAL FAILURE: MKL was NOT linked!"
+            echo "The build fell back to default Netlib BLAS/LAPACK (dead slow)."
             echo "Action: Workflow will now FAIL to prevent downloading a useless binary."
             echo "Fix: Check that 'source /opt/intel/oneapi/setvars.sh' ran successfully before cmake."
             exit 1
           else
-            echo "✅ SUCCESS: MKL is correctly and statically linked!"
+            echo "SUCCESS: MKL is correctly and statically linked!"
             echo "Found signature: $MKL_CHECK"
           fi
 
-      - name: 10. Runtime Execution Test
+      - name: "10. Runtime Execution Test"
         run: |
           cd ~/opensees-build/OpenSees/build
           source /opt/intel/oneapi/setvars.sh --force > /dev/null 2>&1
@@ -140,7 +137,7 @@ jobs:
           echo 'system Mumps; puts {MUMPS solver OK}; exit' > /tmp/test_mumps.tcl
           mpirun --allow-run-as-root -np 2 ./OpenSeesSP /tmp/test_mumps.tcl
 
-      - name: 11. Upload Artifacts (For Manual Download)
+      - name: "11. Upload Artifacts (For Manual Download)"
         uses: actions/upload-artifact@v4
         with:
           name: OpenSees-Build-Ubuntu22.04-MKL-Verified
