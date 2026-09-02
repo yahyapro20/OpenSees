@@ -90,26 +90,41 @@ jobs:
         find $HOME/mumps-install -type f -name "*.a" | sort
 
         echo ""
+        echo "=== MUMPS install tree ==="
+        find "$HOME/mumps-install" -type f -name "*.a" | sort
+
         echo "=== MUMPS build tree ==="
-        find $HOME/mumps-build -type f -name "*.a" | sort
+        find "$HOME/mumps-build" -type f -name "*.a" | sort
 
-        # --- FIX: scivision/mumps may install to lib64 instead of lib ---
-        if [ -d "$HOME/mumps-install/lib64" ] && [ ! -d "$HOME/mumps-install/lib" ]; then
-          ln -s lib64 $HOME/mumps-install/lib
-          echo "Created symlink lib -> lib64"
+        # OpenSees' MUMPS integration expects the MUMPS static
+        # libraries directly under MUMPS_DIR.
+        MUMPS_LIB_DIR="$(find "$HOME/mumps-install" -type f -name 'libdmumps.a' -printf '%h\n' | head -1)"
+
+        if [ -z "$MUMPS_LIB_DIR" ]; then
+        echo "ERROR: libdmumps.a was not installed."
+        exit 1
         fi
 
-        # --- FIX: if install did not work, use build dir directly ---
-        if [ ! -f "$HOME/mumps-install/lib/libdmumps.a" ] && [ -f "$HOME/mumps-build/lib/libdmumps.a" ]; then
-          echo "MUMPS_DIR=$HOME/mumps-build" >> $GITHUB_ENV
-          echo "Using build directory instead of install"
-        elif [ ! -f "$HOME/mumps-install/lib/libdmumps.a" ] && [ -f "$HOME/mumps-build/lib64/libdmumps.a" ]; then
-          ln -s lib64 $HOME/mumps-build/lib 2>/dev/null || true
-          echo "MUMPS_DIR=$HOME/mumps-build" >> $GITHUB_ENV
-          echo "Using build directory with lib64 symlink"
-        else
-          echo "MUMPS_DIR=$HOME/mumps-install" >> $GITHUB_ENV
-        fi
+        echo "MUMPS library directory: $MUMPS_LIB_DIR"
+
+        for lib in \
+        libdmumps.a \
+        libsmumps.a \
+        libmumps_common.a \
+        libpord.a
+        do
+        test -f "$MUMPS_LIB_DIR/$lib" || {
+        echo "ERROR: Missing $lib"
+        exit 1
+        }
+
+        ln -sf "$MUMPS_LIB_DIR/$lib" "$HOME/mumps-install/$lib"
+        done
+
+        echo "=== OpenSees-compatible MUMPS files ==="
+        ls -l "$HOME/mumps-install/"*.a
+
+        echo "MUMPS_DIR=$HOME/mumps-install" >> "$GITHUB_ENV"
 
     - name: Configure OpenSees
       shell: bash
