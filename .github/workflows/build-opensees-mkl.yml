@@ -321,9 +321,9 @@ jobs:
           -DCMAKE_C_COMPILER=gcc \
           -DCMAKE_CXX_COMPILER=g++ \
           -DCMAKE_Fortran_COMPILER=ifx \
-          -DCMAKE_C_FLAGS="-O3 -mavx2 -mfma -flto" \
-          -DCMAKE_CXX_FLAGS="-O3 -mavx2 -mfma -flto" \
-          -DCMAKE_Fortran_FLAGS="-O3 -mavx2 -mfma -flto" \
+          -DCMAKE_C_FLAGS="-O3 -mavx2 -mfma" \
+          -DCMAKE_CXX_FLAGS="-O3 -mavx2 -mfma" \
+          -DCMAKE_Fortran_FLAGS="-O3 -mavx2 -mfma" \
           -DBLA_VENDOR=Intel10_64lp \
           -DMKL_LINK=static \
           -DMKL_INTERFACE_FULL=intel_lp64 \
