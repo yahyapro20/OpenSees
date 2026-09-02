@@ -1,4 +1,4 @@
-name: Build OpenSees + OpenSeesSP (Intel MKL + MUMPS)
+name: OpenSees + OpenSeesSP (Intel MKL + MUMPS)
 
 on:
   workflow_dispatch:
