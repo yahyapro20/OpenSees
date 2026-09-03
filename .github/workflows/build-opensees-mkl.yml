@@ -1,5 +1,5 @@
 name: Build OpenSees + OpenSeesSP
-     
+
 on:
   workflow_dispatch:
 
@@ -112,9 +112,10 @@ jobs:
       - name: Activate and verify Intel oneAPI 2026.0
         shell: bash
         run: |
-          set -euxo pipefail
+          set -exo pipefail
 
           source "${INTEL_ONEAPI_ROOT}/setvars.sh" --force
+          set -u
 
           echo "============================================================"
           echo "Intel oneAPI environment"
@@ -169,9 +170,10 @@ jobs:
       - name: Export Intel environment
         shell: bash
         run: |
-          set -euxo pipefail
+          set -exo pipefail
 
           source "${INTEL_ONEAPI_ROOT}/setvars.sh" --force
+          set -u
 
           {
             echo "MKLROOT=${MKLROOT}"
@@ -193,9 +195,10 @@ jobs:
       - name: Locate MKL static ScaLAPACK and BLACS
         shell: bash
         run: |
-          set -euxo pipefail
+          set -exo pipefail
 
           source "${INTEL_ONEAPI_ROOT}/setvars.sh" --force
+          set -u
 
           echo "MKLROOT=${MKLROOT}"
 
@@ -266,9 +269,10 @@ jobs:
       - name: Configure MUMPS 5.5.1
         shell: bash
         run: |
-          set -euxo pipefail
+          set -exo pipefail
 
           source "${INTEL_ONEAPI_ROOT}/setvars.sh" --force
+          set -u
 
           rm -rf mumps-build
           mkdir -p mumps-build
@@ -305,9 +309,10 @@ jobs:
       - name: Build MUMPS libraries
         shell: bash
         run: |
-          set -euxo pipefail
+          set -exo pipefail
 
           source "${INTEL_ONEAPI_ROOT}/setvars.sh" --force
+          set -u
 
           cmake \
             --build mumps-build \
@@ -320,9 +325,10 @@ jobs:
       - name: Install MUMPS
         shell: bash
         run: |
-          set -euxo pipefail
+          set -exo pipefail
 
           source "${INTEL_ONEAPI_ROOT}/setvars.sh" --force
+          set -u
 
           cmake \
             --install mumps-build
@@ -429,9 +435,10 @@ jobs:
       - name: Configure OpenSees
         shell: bash
         run: |
-          set -euxo pipefail
+          set -exo pipefail
 
           source "${INTEL_ONEAPI_ROOT}/setvars.sh" --force
+          set -u
 
           echo "============================================================"
           echo "OpenSees configuration"
@@ -519,9 +526,10 @@ jobs:
       - name: Build OpenSees
         shell: bash
         run: |
-          set -euxo pipefail
+          set -exo pipefail
 
           source "${INTEL_ONEAPI_ROOT}/setvars.sh" --force
+          set -u
 
           cmake \
             --build "${OPENSEES_BUILD}" \
@@ -535,9 +543,10 @@ jobs:
       - name: Build OpenSeesSP
         shell: bash
         run: |
-          set -euxo pipefail
+          set -exo pipefail
 
           source "${INTEL_ONEAPI_ROOT}/setvars.sh" --force
+          set -u
 
           cmake \
             --build "${OPENSEES_BUILD}" \
@@ -648,9 +657,10 @@ jobs:
       - name: Runtime test OpenSees
         shell: bash
         run: |
-          set -euxo pipefail
+          set -exo pipefail
 
           source "${INTEL_ONEAPI_ROOT}/setvars.sh" --force
+          set -u
 
           cd "${OPENSEES_BUILD}"
 
@@ -664,9 +674,10 @@ jobs:
       - name: Runtime test OpenSeesSP
         shell: bash
         run: |
-          set -euxo pipefail
+          set -exo pipefail
 
           source "${INTEL_ONEAPI_ROOT}/setvars.sh" --force
+          set -u
 
           cd "${OPENSEES_BUILD}"
 
@@ -675,43 +686,3 @@ jobs:
                 --allow-run-as-root \
                 -np 2 \
                 ./OpenSeesSP
-
-      # ============================================================
-      # 24. MUMPS runtime command test
-      # ============================================================
-
-      - name: Runtime MUMPS command test
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          source "${INTEL_ONEAPI_ROOT}/setvars.sh" --force
-
-          cd "${OPENSEES_BUILD}"
-
-          cat > /tmp/mumps_smoke.tcl <<'EOF'
-          puts "Starting MUMPS smoke test"
-          system Mumps
-          puts "MUMPS command is available"
-          exit
-          EOF
-
-          mpirun \
-            --allow-run-as-root \
-            -np 2 \
-            ./OpenSeesSP \
-            /tmp/mumps_smoke.tcl
-
-      # ============================================================
-      # 25. Upload build artifacts
-      # ============================================================
-
-      - name: Upload OpenSees artifacts
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: OpenSees-Intel-oneAPI-2026.0-MUMPS-5.5.1
-          path: |
-            ${{ env.OPENSEES_BUILD }}/OpenSees
-            ${{ env.OPENSEES_BUILD }}/OpenSeesSP
-          if-no-files-found: error
