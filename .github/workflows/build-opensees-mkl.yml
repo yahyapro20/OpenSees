@@ -1,4 +1,4 @@
-name: Build OpenSees + OpenSeesSP
+name: Build OpenSees + OpenSeesSP mkl
 
 on:
   workflow_dispatch:
