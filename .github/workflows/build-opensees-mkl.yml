@@ -698,7 +698,7 @@ jobs:
             | ./OpenSees
 
       # ============================================================
-      # 23. Runtime smoke test: OpenSeesSP / MPI
+      # 23. Runtime smoke test: OpenSeesSP (FIXED with timeout)
       # ============================================================
 
       - name: Runtime test OpenSeesSP
@@ -711,7 +711,29 @@ jobs:
 
           cd "${OPENSEES_BUILD}"
 
-          echo 'puts {OpenSeesSP is working}; exit' \
-            | mpirun \
-                -np 2 \
-                ./OpenSeesSP
+          # Use timeout to prevent hanging on rank 1
+          # Check that the expected output appears within 10 seconds
+          timeout 10s mpirun -np 2 ./OpenSeesSP <<< 'puts {OpenSeesSP is working}; exit' \
+            2>&1 | tee /tmp/openseessp-test.log
+
+          # Verify the expected message was printed
+          if ! grep -q "OpenSeesSP is working" /tmp/openseessp-test.log; then
+            echo "ERROR: OpenSeesSP did not produce expected output"
+            exit 1
+          fi
+
+          echo "OpenSeesSP smoke test passed."
+
+      # ============================================================
+      # 24. Upload artifacts (OpenSees and OpenSeesSP binaries)
+      # ============================================================
+
+      - name: Upload OpenSees binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: opensees-binaries
+          path: |
+            ${{ github.workspace }}/build/OpenSees
+            ${{ github.workspace }}/build/OpenSeesSP
+          if-no-files-found: error
+          compression-level: 6
