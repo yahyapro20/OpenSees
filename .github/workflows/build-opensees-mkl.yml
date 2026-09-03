@@ -464,6 +464,7 @@ jobs:
             -DCMAKE_C_FLAGS="-O3 -march=native -mavx2" \
             -DCMAKE_CXX_FLAGS="-O3 -march=native -mavx2" \
             -DCMAKE_Fortran_FLAGS="-O3 -march=native -mavx2" \
+            -DCMAKE_EXE_LINKER_FLAGS="-Wl,--start-group ${SCALAPACK_LIB} ${BLACS_LIB} ${MKLROOT}/lib/libmkl_intel_lp64.a ${MKLROOT}/lib/libmkl_intel_thread.a ${MKLROOT}/lib/libmkl_core.a -Wl,--end-group" \
             -DBLA_VENDOR=Intel10_64lp \
             -DBLA_STATIC=ON \
             -DMKL_LINK=static \
