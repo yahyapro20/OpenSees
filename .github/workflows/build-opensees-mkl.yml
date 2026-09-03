@@ -203,27 +203,27 @@ jobs:
           echo "MKLROOT=${MKLROOT}"
 
           echo
-          echo "Searching for static ScaLAPACK:"
+          echo "Searching for dynamic ScaLAPACK:"
           find "${MKLROOT}" \
             -type f \
-            -name 'libmkl_scalapack_lp64.a' \
+            -name 'libmkl_scalapack_lp64.so' \
             -print
 
           echo
-          echo "Searching for static Intel MPI BLACS:"
+          echo "Searching for dynamic Intel MPI BLACS:"
           find "${MKLROOT}" \
             -type f \
-            -name 'libmkl_blacs_intelmpi_lp64.a' \
+            -name 'libmkl_blacs_intelmpi_lp64.so' \
             -print
 
           SCALAPACK_LIB="$(find "${MKLROOT}" \
             -type f \
-            -name 'libmkl_scalapack_lp64.a' \
+            -name 'libmkl_scalapack_lp64.so' \
             -print -quit)"
 
           BLACS_LIB="$(find "${MKLROOT}" \
             -type f \
-            -name 'libmkl_blacs_intelmpi_lp64.a' \
+            -name 'libmkl_blacs_intelmpi_lp64.so' \
             -print -quit)"
 
           test -n "${SCALAPACK_LIB}"
@@ -464,7 +464,6 @@ jobs:
             -DCMAKE_C_FLAGS="-O3 -march=native -mavx2" \
             -DCMAKE_CXX_FLAGS="-O3 -march=native -mavx2" \
             -DCMAKE_Fortran_FLAGS="-O3 -march=native -mavx2" \
-            -DCMAKE_EXE_LINKER_FLAGS="-Wl,--start-group ${SCALAPACK_LIB} ${BLACS_LIB} ${MKLROOT}/lib/libmkl_intel_lp64.a ${MKLROOT}/lib/libmkl_intel_thread.a ${MKLROOT}/lib/libmkl_core.a -Wl,--end-group" \
             -DBLA_VENDOR=Intel10_64lp \
             -DBLA_STATIC=ON \
             -DMKL_LINK=static \
