@@ -297,7 +297,8 @@ jobs:
             -DBUILD_COMPLEX=OFF \
             -DBUILD_COMPLEX16=OFF \
             -DBUILD_SHARED_LIBS=OFF \
-            -DMUMPS_find_static=ON
+            -DMUMPS_find_static=ON \
+            -DMKL_THREADING=sequential
 
       # ============================================================
       # 10. Build only MUMPS libraries
@@ -467,6 +468,7 @@ jobs:
             -DBLA_STATIC=ON \
             -DMKL_LINK=static \
             -DMKL_INTERFACE_FULL=intel_lp64 \
+            -DMKL_THREADING=sequential \
             -DMUMPS_DIR="${MUMPS_LIBDIR}" \
             -DPARALLEL=1 \
             -DSCALAPACK_LIBRARIES="${SCALAPACK_LIB};${BLACS_LIB}"
