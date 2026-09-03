@@ -203,27 +203,27 @@ jobs:
           echo "MKLROOT=${MKLROOT}"
 
           echo
-          echo "Searching for dynamic ScaLAPACK:"
+          echo "Searching for static ScaLAPACK:"
           find "${MKLROOT}" \
             -type f \
-            -name 'libmkl_scalapack_lp64.so' \
+            -name 'libmkl_scalapack_lp64.a' \
             -print
 
           echo
-          echo "Searching for dynamic Intel MPI BLACS:"
+          echo "Searching for static Intel MPI BLACS:"
           find "${MKLROOT}" \
             -type f \
-            -name 'libmkl_blacs_intelmpi_lp64.so' \
+            -name 'libmkl_blacs_intelmpi_lp64.a' \
             -print
 
           SCALAPACK_LIB="$(find "${MKLROOT}" \
             -type f \
-            -name 'libmkl_scalapack_lp64.so' \
+            -name 'libmkl_scalapack_lp64.a' \
             -print -quit)"
 
           BLACS_LIB="$(find "${MKLROOT}" \
             -type f \
-            -name 'libmkl_blacs_intelmpi_lp64.so' \
+            -name 'libmkl_blacs_intelmpi_lp64.a' \
             -print -quit)"
 
           test -n "${SCALAPACK_LIB}"
@@ -550,10 +550,38 @@ jobs:
           source "${INTEL_ONEAPI_ROOT}/setvars.sh" --force
           set -u
 
-          cmake \
-            --build "${OPENSEES_BUILD}" \
-            --target OpenSeesSP \
-            --parallel 4
+          cd "${OPENSEES_BUILD}"
+
+          set +e
+          cmake --build . --target OpenSeesSP --parallel 4
+          BUILD_STATUS=$?
+          set -e
+
+          if [ "${BUILD_STATUS}" -ne 0 ] || [ ! -f OpenSeesSP ]; then
+            echo "============================================================"
+            echo "Standard ninja link failed (expected: known MKL_calloc/BLACS"
+            echo "static-link issue). Relinking manually with ScaLAPACK and"
+            echo "BLACS moved INSIDE the MKL --start-group/--end-group so the"
+            echo "linker can resolve the circular dependency on MKL_calloc."
+            echo "============================================================"
+
+            LINK_CMD="$(ninja -t commands OpenSeesSP | tail -n 1)"
+
+            FIXED_CMD="$(printf '%s' "${LINK_CMD}" | sed -E \
+              "s#(-Wl,--start-group)[[:space:]]+${MKLROOT}/lib/libmkl_intel_lp64\.a#\1 ${SCALAPACK_LIB} ${BLACS_LIB} ${MKLROOT}/lib/libmkl_intel_lp64.a#")"
+
+            if [ "${FIXED_CMD}" = "${LINK_CMD}" ]; then
+              echo "ERROR: could not find the MKL --start-group marker to patch in the link command."
+              echo "Original command was:"
+              echo "${LINK_CMD}"
+              exit 1
+            fi
+
+            eval "${FIXED_CMD}"
+          fi
+
+          test -f OpenSeesSP
+          echo "OpenSeesSP link succeeded."
 
       # ============================================================
       # 19. CRITICAL LINK VERIFICATION
