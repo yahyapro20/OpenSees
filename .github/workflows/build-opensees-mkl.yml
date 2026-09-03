@@ -1,4 +1,4 @@
-name: OpenSees + OpenSeesSP (Intel MKL + MUMPS)
+name: Build OpenSees + OpenSeesSP (Intel MKL + MUMPS)
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ permissions:
 jobs:
 
   build:
-    name: Ubuntu 22.04 / Intel oneAPI 2026.0 / MKL / MUMPS
+    name: Ubuntu 22.04 / Intel oneAPI 2026.0 / MKL / MUMPS 5.5.1
     runs-on: ubuntu-22.04
     timeout-minutes: 180
 
@@ -27,7 +27,7 @@ jobs:
 
 
     # ============================================================
-    # 2. Dependencies
+    # 2. Ubuntu dependencies
     # ============================================================
 
     - name: Install dependencies
@@ -83,7 +83,7 @@ jobs:
 
 
     # ============================================================
-    # 4. Verify exact Intel environment
+    # 4. Verify Intel environment
     # ============================================================
 
     - name: Verify Intel oneAPI environment
@@ -94,7 +94,7 @@ jobs:
         source /opt/intel/oneapi/setvars.sh --force
 
         echo "========================================"
-        echo "Intel environment"
+        echo "Intel oneAPI environment"
         echo "========================================"
 
         echo "MKLROOT=$MKLROOT"
@@ -111,17 +111,15 @@ jobs:
         mpirun --version
 
         echo ""
-        echo "MPI Fortran wrapper:"
-        which mpiifx || true
+        echo "MPI Fortran:"
+        which mpiifx
 
         echo ""
-        echo "MKL directory:"
+        echo "MKL:"
         ls -ld "$MKLROOT"
 
         test "$MKLROOT" = "/opt/intel/oneapi/mkl/2026.0"
-
         test -x "$(which ifx)"
-
         test -n "$I_MPI_ROOT"
 
         echo ""
@@ -132,34 +130,33 @@ jobs:
 
 
     # ============================================================
-    # 5. Verify CMake
+    # 5. CMake / Ninja
     # ============================================================
 
-    - name: Verify CMake
+    - name: Verify build tools
       shell: bash
       run: |
         set -e
 
-        echo "CMake version:"
+        echo "CMake:"
         cmake --version
 
         echo ""
-        echo "Ninja version:"
+        echo "Ninja:"
         ninja --version
 
 
     # ============================================================
     # 6. Build MUMPS 5.5.1
     #
-    # Important:
-    # We intentionally do NOT build MUMPS test executables.
+    # IMPORTANT:
+    # - Intel ifx
+    # - Intel MPI
+    # - ScaLAPACK ON
+    # - OpenMP ON
+    # - tests are not built
     #
-    # The previous failure:
-    #
-    # relocation R_X86_64_32S ... can not be used when making a PIE
-    #
-    # was from a MUMPS test executable, not the required MUMPS
-    # static libraries.
+    # We build only the libraries OpenSees needs.
     # ============================================================
 
     - name: Build MUMPS 5.5.1
@@ -187,7 +184,9 @@ jobs:
           -DCMAKE_Fortran_COMPILER=ifx \
           -DMUMPS_UPSTREAM_VERSION=5.5.1 \
           -DMUMPS_parallel=ON \
+          -DMUMPS_scalapack=ON \
           -DMUMPS_openmp=ON \
+          -DMUMPS_intsize64=OFF \
           -DBUILD_SINGLE=ON \
           -DBUILD_DOUBLE=ON \
           -DBUILD_COMPLEX=OFF \
@@ -196,7 +195,7 @@ jobs:
 
         echo ""
         echo "========================================"
-        echo "MUMPS configure completed"
+        echo "MUMPS configured"
         echo "========================================"
 
         cmake --build "$HOME/mumps-build" \
@@ -205,24 +204,18 @@ jobs:
 
         cmake --install "$HOME/mumps-build"
 
-        echo ""
-        echo "========================================"
-        echo "MUMPS libraries"
-        echo "========================================"
 
-        find "$HOME/mumps-build" \
-          -type f \
-          \( \
-            -name "libdmumps.a" -o \
-            -name "libsmumps.a" -o \
-            -name "libmumps_common.a" -o \
-            -name "libpord.a" \
-          \) \
-          -print | sort
+    # ============================================================
+    # 7. Verify MUMPS libraries
+    # ============================================================
 
-        echo ""
+    - name: Verify MUMPS installation
+      shell: bash
+      run: |
+        set -e
+
         echo "========================================"
-        echo "MUMPS installed files"
+        echo "Searching MUMPS libraries"
         echo "========================================"
 
         find "$HOME/mumps-install" \
@@ -235,18 +228,6 @@ jobs:
           \) \
           -print | sort
 
-
-    # ============================================================
-    # 7. Locate MUMPS libraries exactly
-    # ============================================================
-
-    - name: Verify MUMPS installation
-      shell: bash
-      run: |
-        set -e
-
-        echo "Searching for MUMPS libraries..."
-
         MUMPS_LIB_DIR="$(
           find "$HOME/mumps-install" \
             -type f \
@@ -256,10 +237,12 @@ jobs:
         )"
 
         if [ -z "$MUMPS_LIB_DIR" ]; then
-          echo "ERROR: libdmumps.a was not found."
+          echo ""
+          echo "ERROR: libdmumps.a not found."
           exit 1
         fi
 
+        echo ""
         echo "MUMPS_LIB_DIR=$MUMPS_LIB_DIR"
 
         for lib in \
@@ -277,15 +260,68 @@ jobs:
         done
 
         echo ""
-        echo "MUMPS libraries verified."
 
-        # OpenSees expects MUMPS_DIR/libdmumps.a,
-        # MUMPS_DIR/libmumps_common.a and MUMPS_DIR/libpord.a.
         echo "MUMPS_DIR=$MUMPS_LIB_DIR" >> "$GITHUB_ENV"
 
 
     # ============================================================
-    # 8. Configure OpenSees
+    # 8. Verify MUMPS has ScaLAPACK / BLACS symbols
+    #
+    # This is directly relevant to the previous undefined-reference
+    # error:
+    #
+    # blacs_gridinfo_
+    # numroc_
+    # descinit_
+    # pdpotrf_
+    # pdgetrf_
+    # ============================================================
+
+    - name: Verify MUMPS ScaLAPACK linkage
+      shell: bash
+      run: |
+        set -e
+
+        echo "========================================"
+        echo "Checking MUMPS ScaLAPACK symbols"
+        echo "========================================"
+
+        nm "$MUMPS_DIR/libdmumps.a" \
+          | grep -E \
+            "blacs_gridinfo_|numroc_|descinit_|pdpotrf_|pdgetrf_|pdpotrs_|pdgetrs_" \
+          | head -20 || true
+
+        echo ""
+        echo "Checking Intel MKL ScaLAPACK / BLACS libraries..."
+
+        find "$MKLROOT" \
+          -type f \
+          \( \
+            -name "libmkl_scalapack*" -o \
+            -name "libmkl_blacs*" \
+          \) \
+          -print | sort
+
+        test -n "$(
+          find "$MKLROOT" \
+            -type f \
+            -name "libmkl_scalapack*" \
+            | head -n 1
+        )"
+
+        test -n "$(
+          find "$MKLROOT" \
+            -type f \
+            -name "libmkl_blacs*" \
+            | head -n 1
+        )"
+
+        echo ""
+        echo "MUMPS ScaLAPACK dependencies are present."
+
+
+    # ============================================================
+    # 9. Configure OpenSees
     # ============================================================
 
     - name: Configure OpenSees
@@ -301,7 +337,7 @@ jobs:
         cd build
 
         echo "========================================"
-        echo "OpenSees configuration"
+        echo "OpenSees configure"
         echo "========================================"
 
         echo "MKLROOT=$MKLROOT"
@@ -320,23 +356,23 @@ jobs:
           -DCMAKE_C_COMPILER=gcc \
           -DCMAKE_CXX_COMPILER=g++ \
           -DCMAKE_Fortran_COMPILER=ifx \
-          -DCMAKE_C_FLAGS="-O3 -mavx2 -mfma -flto" \
-          -DCMAKE_CXX_FLAGS="-O3 -mavx2 -mfma -flto" \
-          -DCMAKE_Fortran_FLAGS="-O3 -mavx2 -mfma -flto" \
+          -DCMAKE_C_FLAGS="-O3 -mavx2 -mfma" \
+          -DCMAKE_CXX_FLAGS="-O3 -mavx2 -mfma" \
+          -DCMAKE_Fortran_FLAGS="-O3 -mavx2 -mfma" \
           -DBLA_VENDOR=Intel10_64lp \
+          -DBLA_STATIC=ON \
           -DMKL_LINK=static \
           -DMKL_INTERFACE_FULL=intel_lp64 \
           -DMUMPS_DIR="$MUMPS_DIR" \
+          -DPARALLEL=1 \
           -DCMAKE_INSTALL_PREFIX="$HOME/opensees-install"
 
 
     # ============================================================
-    # 9. HARD MKL CHECK — CMake configuration
-    #
-    # If CMake selected Ubuntu Netlib BLAS/LAPACK, fail.
+    # 10. HARD CHECK — CMake must use Intel MKL
     # ============================================================
 
-    - name: Verify MKL configuration
+    - name: Verify MKL CMake configuration
       shell: bash
       run: |
         set -e
@@ -344,38 +380,38 @@ jobs:
         cd build
 
         echo "========================================"
-        echo "MKL / BLAS / LAPACK CMake configuration"
+        echo "BLAS / LAPACK / MKL configuration"
         echo "========================================"
 
-        echo ""
-        echo "Relevant CMakeCache entries:"
         grep -Ei \
-          "BLAS|LAPACK|MKL|mkl" \
+          "BLAS|LAPACK|MKL|SCALAPACK|BLACS" \
           CMakeCache.txt \
           || true
 
         echo ""
         echo "========================================"
-        echo "Checking for Netlib fallback"
+        echo "Searching CMake files for Ubuntu Netlib"
         echo "========================================"
 
-        if grep -Eqi \
+        if grep -R -Eqi \
           "/usr/lib/x86_64-linux-gnu/libblas|/usr/lib/x86_64-linux-gnu/liblapack" \
-          CMakeCache.txt
+          . \
+          --include='CMakeCache.txt' \
+          --include='*.cmake'
         then
           echo ""
           echo "ERROR:"
-          echo "Ubuntu Netlib BLAS/LAPACK was detected."
-          echo "MKL fallback protection triggered."
-          echo ""
+          echo "Ubuntu Netlib BLAS/LAPACK detected."
+          echo "MKL verification FAILED."
           exit 1
         fi
 
+        echo ""
         echo "No Ubuntu Netlib BLAS/LAPACK detected."
 
         echo ""
         echo "========================================"
-        echo "Checking MKLROOT"
+        echo "Checking MKL 2026.0"
         echo "========================================"
 
         grep -F \
@@ -383,14 +419,14 @@ jobs:
           CMakeCache.txt \
           >/dev/null
 
-        echo "MKL 2026.0 path detected in CMake configuration."
+        echo "Intel MKL 2026.0 detected."
 
         echo ""
-        echo "MKL CMake configuration verified."
+        echo "MKL configuration verified."
 
 
     # ============================================================
-    # 10. Build OpenSees
+    # 11. Build OpenSees
     # ============================================================
 
     - name: Build OpenSees
@@ -408,7 +444,7 @@ jobs:
 
 
     # ============================================================
-    # 11. Build OpenSeesSP
+    # 12. Build OpenSeesSP
     # ============================================================
 
     - name: Build OpenSeesSP
@@ -426,11 +462,7 @@ jobs:
 
 
     # ============================================================
-    # 12. HARD MKL CHECK — final binaries
-    #
-    # No "no MKL strings = OK".
-    #
-    # If the expected MKL signature is absent, fail.
+    # 13. HARD CHECK — MKL in final binaries
     # ============================================================
 
     - name: Verify MKL in final binaries
@@ -450,7 +482,7 @@ jobs:
           test -x "./$exe"
 
           echo ""
-          echo "MKL strings:"
+          echo "MKL signature:"
 
           if strings "./$exe" | grep -i \
             "Math Kernel Library"
@@ -460,45 +492,17 @@ jobs:
           else
             echo ""
             echo "ERROR:"
-            echo "Intel MKL signature was NOT found in $exe."
-            echo ""
+            echo "Intel MKL signature NOT found in $exe."
             exit 1
           fi
         done
 
         echo ""
-        echo "Final binary MKL verification passed."
+        echo "Final MKL binary verification PASSED."
 
 
     # ============================================================
-    # 13. Show actual link information
-    #
-    # This is diagnostic only, not a warning/static-analysis step.
-    # ============================================================
-
-    - name: Verify final link references
-      shell: bash
-      run: |
-        set -e
-
-        cd build
-
-        echo "========================================"
-        echo "Final executable information"
-        echo "========================================"
-
-        file ./OpenSees
-        file ./OpenSeesSP
-
-        echo ""
-        echo "Dynamic dependencies:"
-        ldd ./OpenSees || true
-        echo ""
-        ldd ./OpenSeesSP || true
-
-
-    # ============================================================
-    # 14. OpenSees runtime test
+    # 14. Runtime OpenSees
     # ============================================================
 
     - name: Runtime OpenSees test
@@ -513,7 +517,7 @@ jobs:
 
 
     # ============================================================
-    # 15. OpenSeesSP + MUMPS runtime test
+    # 15. Runtime OpenSeesSP + MUMPS
     # ============================================================
 
     - name: Runtime OpenSeesSP MUMPS test
