@@ -1,4 +1,4 @@
-name: Build OpenSees + OpenSeesSP mkl
+name: Build OpenSeesSP MKL + VTUNE PROFILER
 
 on:
   workflow_dispatch:
