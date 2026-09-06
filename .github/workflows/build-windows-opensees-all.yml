@@ -9,7 +9,6 @@ permissions:
   contents: read
 
 env:
-  VCPKG_ROOT: ${{ github.workspace }}/vcpkg
   MUMPS_INSTALL: ${{ github.workspace }}/mumps-install
   OPENSEES_BUILD: ${{ github.workspace }}/build
 
@@ -36,19 +35,49 @@ jobs:
           fetch-depth: 1
 
       # ============================================================
-      # 2. Setup CMake, Ninja, and vcpkg (Dependencies)
+      # 2. Use PRE-INSTALLED vcpkg on Windows runner (NO clone)
       # ============================================================
-      - name: Setup CMake and Ninja
-        uses: lukka/get-cmake@latest
-
       - name: Setup vcpkg and Install Dependencies
         shell: pwsh
         run: |
-          git clone https://github.com/microsoft/vcpkg.git
-          .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
-          # Install exact dependencies required by OpenSees
-          .\vcpkg\vcpkg.exe install tcl:x64-windows tk:x64-windows eigen3:x64-windows hdf5:x64-windows
+          # حیاتی: Stop نباشد! ابزارهای native پیشرفت را به stderr می‌نویسند
+          # و با Stop، مرحله بی‌صدا کشته می‌شود.
+          $ErrorActionPreference = "Continue"
 
+          Write-Host "=== Using pre-installed vcpkg ==="
+          Write-Host "VCPKG_INSTALLATION_ROOT = $env:VCPKG_INSTALLATION_ROOT"
+
+          if (-not $env:VCPKG_INSTALLATION_ROOT) {
+            Write-Host "ERROR: VCPKG_INSTALLATION_ROOT not set on runner!"
+            exit 1
+          }
+
+          $vcpkgExe = Join-Path $env:VCPKG_INSTALLATION_ROOT "vcpkg.exe"
+          if (-not (Test-Path $vcpkgExe)) {
+            Write-Host "ERROR: vcpkg.exe not found at $vcpkgExe"
+            exit 1
+          }
+
+          # برای مرحله‌های بعدی (toolchain و بسته‌بندی DLL)
+          Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT"
+
+          & $vcpkgExe version
+          Write-Host "vcpkg executable OK"
+
+          $packages = @("tcl:x64-windows", "tk:x64-windows", "eigen3:x64-windows", "hdf5:x64-windows")
+          foreach ($pkg in $packages) {
+            Write-Host ">>> Installing: $pkg (may take several minutes)"
+            & $vcpkgExe install $pkg 2>&1 | ForEach-Object { Write-Host $_ }
+            Write-Host ">>> exit code: $LASTEXITCODE"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "ERROR: vcpkg install $pkg failed (exit $LASTEXITCODE)"
+              exit 1
+            }
+            Write-Host ">>> OK: $pkg"
+          }
+
+          Write-Host "=== All vcpkg dependencies installed ==="
+      
       # ============================================================
       # 3. Install Intel oneAPI (Base + HPC) via winget
       # ============================================================
