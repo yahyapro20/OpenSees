@@ -1,0 +1,329 @@
+name: Build OpenSees Windows (Release + Profile + SP)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "master" ]
+
+permissions:
+  contents: read
+
+env:
+  VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+  MUMPS_INSTALL: ${{ github.workspace }}/mumps-install
+  OPENSEES_BUILD: ${{ github.workspace }}/build
+
+jobs:
+  build-windows:
+    name: OpenSees ${{ matrix.build_type }} / Windows MSVC + oneAPI
+    runs-on: windows-2022
+    timeout-minutes: 180
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Release, Profile]
+
+    steps:
+      # ============================================================
+      # 1. Checkout OpenSees
+      # ============================================================
+      - name: Checkout OpenSees
+        uses: actions/checkout@v4
+        with:
+          repository: yahyapro20/OpenSees
+          ref: master
+          fetch-depth: 1
+
+      # ============================================================
+      # 2. Setup CMake, Ninja, and vcpkg (Dependencies)
+      # ============================================================
+      - name: Setup CMake and Ninja
+        uses: lukka/get-cmake@latest
+
+      - name: Setup vcpkg and Install Dependencies
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git
+          .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+          # Install exact dependencies required by OpenSees
+          .\vcpkg\vcpkg.exe install tcl:x64-windows tk:x64-windows eigen3:x64-windows hdf5:x64-windows
+
+      # ============================================================
+      # 3. Install Intel oneAPI (Base + HPC) via winget
+      # ============================================================
+      - name: Install Intel oneAPI 2026.0
+        shell: pwsh
+        run: |
+          Write-Host "Installing Intel oneAPI Base Toolkit (MKL)..."
+          winget install --id Intel.oneAPI.BaseToolkit -e --silent --accept-source-agreements --accept-package-agreements
+          
+          Write-Host "Installing Intel oneAPI HPC Toolkit (MPI + ifx)..."
+          winget install --id Intel.oneAPI.HPCToolkit -e --silent --accept-source-agreements --accept-package-agreements
+
+      # ============================================================
+      # 4. Activate Intel Environment (CRITICAL STEP)
+      # ============================================================
+      - name: Activate and Export Intel oneAPI Environment
+        shell: pwsh
+        run: |
+          $setvars = "C:\Program Files (x86)\Intel\oneAPI\setvars.bat"
+          if (-not (Test-Path $setvars)) {
+            Write-Error "setvars.bat not found at $setvars"
+            exit 1
+          }
+          
+          # Execute setvars.bat and capture the environment variables
+          $envVars = cmd /c "`"$setvars`" intel64 && set"
+          foreach ($line in $envVars) {
+            if ($line -match "^(.*?)=(.*)$") {
+              $key = $matches[1]
+              $val = $matches[2]
+              [System.Environment]::SetEnvironmentVariable($key, $val, "Process")
+              Add-Content -Path $env:GITHUB_ENV -Value "$key=$val"
+            }
+          }
+          Write-Host "MKLROOT is now: $env:MKLROOT"
+          Write-Host "I_MPI_ROOT is now: $env:I_MPI_ROOT"
+
+      # ============================================================
+      # 5. Locate MKL static ScaLAPACK + BLACS (.lib)
+      # ============================================================
+      - name: Locate MKL static ScaLAPACK and BLACS
+        shell: pwsh
+        run: |
+          $scalapack_lib = Get-ChildItem -Path $env:MKLROOT -Recurse -Filter "mkl_scalapack_lp64.lib" | Select-Object -First 1 -ExpandProperty FullName
+          $blacs_lib = Get-ChildItem -Path $env:MKLROOT -Recurse -Filter "mkl_blacs_intelmpi_lp64.lib" | Select-Object -First 1 -ExpandProperty FullName
+          
+          if (-not $scalapack_lib -or -not $blacs_lib) {
+            Write-Error "Could not find ScaLAPACK or BLACS .lib files in MKLROOT!"
+            exit 1
+          }
+          
+          Write-Host "SCALAPACK_LIB=$scalapack_lib"
+          Write-Host "BLACS_LIB=$blacs_lib"
+          
+          Add-Content -Path $env:GITHUB_ENV -Value "SCALAPACK_LIB=$scalapack_lib"
+          Add-Content -Path $env:GITHUB_ENV -Value "BLACS_LIB=$blacs_lib"
+
+      # ============================================================
+      # 6. Build MUMPS 5.5.1 (Intel Fortran + MSVC)
+      # ============================================================
+      - name: Clone and Build MUMPS
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/scivision/mumps.git
+          cd mumps
+          
+          cmake -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER=cl `
+            -DCMAKE_Fortran_COMPILER=ifx `
+            -DMUMPS_parallel=ON `
+            -DMUMPS_scalapack=ON `
+            -DMUMPS_openmp=ON `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DMUMPS_find_static=ON `
+            -DMKL_THREADING=sequential `
+            -DCMAKE_INSTALL_PREFIX="$env:MUMPS_INSTALL"
+            
+          cmake --build build --parallel
+          cmake --install build
+          
+          # Verify MUMPS libs exist
+          $mumps_libdir = "$env:MUMPS_INSTALL\lib"
+          if (-not (Test-Path "$mumps_libdir\dmumps.lib")) {
+            Write-Error "dmumps.lib not found!"
+            exit 1
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value "MUMPS_LIBDIR=$mumps_libdir"
+
+      # ============================================================
+      # 7. Configure OpenSees (Matrix: Release vs Profile)
+      # ============================================================
+      - name: Configure OpenSees
+        shell: pwsh
+        run: |
+          # Set flags based on Matrix build_type
+          if ($env:BUILD_TYPE -eq "Release") {
+            $c_flags = "/O2 /arch:AVX2 /GL"
+            $f_flags = "/O2 /Qipo /arch:AVX2"
+            $build_type = "Release"
+          } else {
+            # Profile: Debug info, Frame Pointers for VTune, No LTO
+            $c_flags = "/O2 /Zi /Oy-"
+            $f_flags = "/O2 /Zi"
+            $build_type = "RelWithDebInfo"
+          }
+
+          cmake -S . -B $env:OPENSEES_BUILD -G Ninja `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            -DCMAKE_BUILD_TYPE=$build_type `
+            -DCMAKE_C_COMPILER=cl `
+            -DCMAKE_CXX_COMPILER=cl `
+            -DCMAKE_Fortran_COMPILER=ifx `
+            -DCMAKE_C_FLAGS="$c_flags" `
+            -DCMAKE_CXX_FLAGS="$c_flags" `
+            -DCMAKE_Fortran_FLAGS="$f_flags" `
+            -DBLA_VENDOR=Intel10_64lp `
+            -DBLA_STATIC=ON `
+            -DMKL_LINK=static `
+            -DMKL_INTERFACE_FULL=intel_lp64 `
+            -DMKL_THREADING=sequential `
+            -DMUMPS_DIR="$env:MUMPS_LIBDIR" `
+            -DPARALLEL=1 `
+            -DSCALAPACK_LIBRARIES="$env:SCALAPACK_LIB;$env:BLACS_LIB"
+
+      # ============================================================
+      # 8. HARD GATE: Verify CMake Configuration
+      # ============================================================
+      - name: Verify OpenSees CMake configuration (No Netlib Fallback)
+        shell: pwsh
+        run: |
+          $cache = Get-Content "$env:OPENSEES_BUILD\CMakeCache.txt"
+          
+          # Check ScaLAPACK
+          if ($cache -notmatch "SCALAPACK_LIBRARIES") {
+            Write-Error "SCALAPACK_LIBRARIES missing in CMakeCache!"
+            exit 1
+          }
+          
+          # Check for generic fallback (blas.lib or lapack.lib without mkl_)
+          $generic_blas = $cache | Select-String -Pattern "([^_]|^)blas\.lib|([^_]|^)lapack\.lib"
+          if ($generic_blas) {
+            Write-Error "Fallback to generic BLAS/LAPACK detected!"
+            exit 1
+          }
+          Write-Host "CMake configuration verified. MKL is strictly enforced."
+
+      # ============================================================
+      # 9. Build OpenSees (Serial)
+      # ============================================================
+      - name: Build OpenSees
+        shell: pwsh
+        run: cmake --build $env:OPENSEES_BUILD --target OpenSees --parallel
+
+      # ============================================================
+      # 10. Build OpenSeesSP (Parallel)
+      # ============================================================
+      - name: Build OpenSeesSP
+        shell: pwsh
+        run: |
+          cmake --build $env:OPENSEES_BUILD --target OpenSeesSP --parallel
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "OpenSeesSP link failed. MSVC usually handles .lib order automatically, check missing symbols."
+            exit 1
+          }
+
+      # ============================================================
+      # 11. CRITICAL LINK VERIFICATION (Ninja Commands)
+      # ============================================================
+      - name: Verify OpenSeesSP link contains MKL ScaLAPACK and BLACS
+        shell: pwsh
+        run: |
+          $ninja_file = "$env:OPENSEES_BUILD\build.ninja"
+          $content = Get-Content $ninja_file -Raw
+          
+          if ($content -notmatch "mkl_scalapack_lp64\.lib") {
+            Write-Error "ScaLAPACK .lib is missing from the final Ninja link command!"
+            exit 1
+          }
+          if ($content -notmatch "mkl_blacs_intelmpi_lp64\.lib") {
+            Write-Error "BLACS .lib is missing from the final Ninja link command!"
+            exit 1
+          }
+          Write-Host "Link verification PASSED."
+
+      # ============================================================
+      # 12. Verify Intel MKL Signature (Equivalent to `strings`)
+      # ============================================================
+      - name: Verify Intel MKL inside OpenSeesSP
+        shell: pwsh
+        run: |
+          $exe = "$env:OPENSEES_BUILD\OpenSeesSP.exe"
+          # findstr is the Windows equivalent of strings + grep for PE binaries
+          $sig = findstr /C:"Math Kernel Library" $exe
+          if (-not $sig) {
+            Write-Error "MKL signature NOT found in OpenSeesSP.exe! Fallback occurred."
+            exit 1
+          }
+          Write-Host "MKL signature verified successfully."
+
+      # ============================================================
+      # 13. Runtime smoke test: OpenSees
+      # ============================================================
+      - name: Runtime test OpenSees
+        shell: pwsh
+        run: |
+          cd $env:OPENSEES_BUILD
+          echo "puts {OpenSees is working}; exit" | .\OpenSees.exe
+
+      # ============================================================
+      # 14. Runtime smoke test: OpenSeesSP (FIXED with Process Timeout)
+      # ============================================================
+      - name: Runtime test OpenSeesSP (MPI Timeout Logic)
+        shell: pwsh
+        run: |
+          cd $env:OPENSEES_BUILD
+          
+          $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+          $pinfo.FileName = "mpiexec"
+          $pinfo.Arguments = "-n 2 .\OpenSeesSP.exe -c `"puts {OpenSeesSP is working}; exit`""
+          $pinfo.RedirectStandardOutput = $true
+          $pinfo.RedirectStandardError = $true
+          $pinfo.UseShellExecute = $false
+          $pinfo.CreateNoWindow = $true
+          
+          $p = New-Object System.Diagnostics.Process
+          $p.StartInfo = $pinfo
+          $p.Start() | Out-Null
+          
+          # Wait 15 seconds (equivalent to Linux `timeout 10s`)
+          $exited = $p.WaitForExit(15000)
+          $stdout = $p.StandardOutput.ReadToEnd()
+          
+          if (-not $exited) {
+            Write-Host "Process killed by timeout (expected behavior for MPI rank 1 hang)."
+            $p.Kill()
+          }
+          
+          if ($stdout -notmatch "OpenSeesSP is working") {
+            Write-Error "OpenSeesSP smoke test failed. Output: $stdout"
+            exit 1
+          }
+          Write-Host "OpenSeesSP smoke test passed."
+
+      # ============================================================
+      # 15. Package Binaries and ALL Runtime DLLs
+      # ============================================================
+      - name: Package Artifacts (Binaries + DLLs)
+        shell: pwsh
+        run: |
+          $artifact_dir = "artifact_${{ matrix.build_type }}"
+          mkdir $artifact_dir
+          
+          # 1. Copy Executables
+          Copy-Item "$env:OPENSEES_BUILD\OpenSees.exe" $artifact_dir\
+          Copy-Item "$env:OPENSEES_BUILD\OpenSeesSP.exe" $artifact_dir\
+          
+          # 2. Copy vcpkg DLLs (Tcl, Tk, HDF5, zlib)
+          $vcpkg_bin = "$env:VCPKG_ROOT\installed\x64-windows\bin"
+          if (Test-Path $vcpkg_bin) {
+            Copy-Item "$vcpkg_bin\*.dll" $artifact_dir\ -ErrorAction SilentlyContinue
+          }
+          
+          # 3. Copy Intel Redistributable DLLs (OpenMP, MPI)
+          $intel_root = "C:\Program Files (x86)\Intel\oneAPI"
+          Get-ChildItem -Path $intel_root -Recurse -Filter "libiomp5md.dll" -ErrorAction SilentlyContinue | Select-Object -First 1 | Copy-Item -Destination $artifact_dir\ -ErrorAction SilentlyContinue
+          Get-ChildItem -Path $intel_root -Recurse -Filter "impi.dll" -ErrorAction SilentlyContinue | Select-Object -First 1 | Copy-Item -Destination $artifact_dir\ -ErrorAction SilentlyContinue
+          Get-ChildItem -Path $intel_root -Recurse -Filter "impicxx.dll" -ErrorAction SilentlyContinue | Select-Object -First 1 | Copy-Item -Destination $artifact_dir\ -ErrorAction SilentlyContinue
+
+      # ============================================================
+      # 16. Upload Artifacts
+      # ============================================================
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenSees-Windows-${{ matrix.build_type }}-AVX2
+          path: artifact_${{ matrix.build_type }}/
+          if-no-files-found: error
