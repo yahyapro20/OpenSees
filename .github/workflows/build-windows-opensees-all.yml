@@ -40,30 +40,31 @@ jobs:
         uses: lukka/get-cmake@latest
 
       # ============================================================
-      # 3. vcpkg + Dependencies (Self-Healing: no tk port in vcpkg)
+      # 3. vcpkg + Dependencies (Self-Healing: ZLIB + Tcl/Tk fix)
       # ============================================================
       - name: Setup vcpkg and Install Dependencies
         shell: pwsh
         run: |
-          # حیاتی: Stop نباشد — ابزارهای native پیشرفت را به stderr می‌نویسند
           $ErrorActionPreference = "Continue"
 
           # ---------- 3.1 Locate or bootstrap vcpkg ----------
           $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
           if (-not $vcpkgRoot -or -not (Test-Path (Join-Path $vcpkgRoot "vcpkg.exe"))) {
-            Write-Host "vcpkg not pre-installed -> bootstrapping via cmd (avoids pwsh stderr trap)..."
+            Write-Host "vcpkg not pre-installed -> bootstrapping via cmd..."
             $vcpkgRoot = Join-Path $env:GITHUB_WORKSPACE "vcpkg"
             cmd /c "git clone --depth 1 https://github.com/microsoft/vcpkg.git `"$vcpkgRoot`" 2>&1"
             cmd /c "`"$vcpkgRoot\bootstrap-vcpkg.bat`" -disableMetrics 2>&1"
             if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: vcpkg bootstrap failed"; exit 1 }
           }
           $vcpkgExe = Join-Path $vcpkgRoot "vcpkg.exe"
+          
+          # صادر کردن مسیر واقعی vcpkg برای مراحل بعد
           Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=$vcpkgRoot"
           & $vcpkgExe version
 
-          # ---------- 3.2 Install ports (tk port دیگر وجود ندارد) ----------
-          foreach ($pkg in @("tcl:x64-windows", "eigen3:x64-windows", "hdf5:x64-windows")) {
-            Write-Host ">>> Installing: $pkg"
+          # ---------- 3.2 Install ports (zlib اضافه شد، tk حذف شد) ----------
+          foreach ($pkg in @("zlib:x64-windows", "tcl:x64-windows", "eigen3:x64-windows", "hdf5:x64-windows")) {
+            Write-Host ">>> Installing: $pkg (this may take a few minutes per package)"
             & $vcpkgExe install $pkg 2>&1 | ForEach-Object { Write-Host $_ }
             if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: vcpkg install $pkg failed"; exit 1 }
           }
@@ -108,8 +109,8 @@ jobs:
           }
           Write-Host "=== Dependencies step finished ==="
 
-            # ============================================================
-      # 4a. Download + Extract Intel oneAPI Toolkit (روش رسمی oneapi-ci)
+      # ============================================================
+      # 4a. Download + Extract Intel oneAPI Toolkit (روش رسمی CI)
       # ============================================================
       - name: Download and Extract Intel oneAPI Toolkit
         shell: pwsh
@@ -132,7 +133,7 @@ jobs:
           Write-Host "Extraction OK."
 
       # ============================================================
-      # 4b. Silent install: MKL + ifx + MPI فقط (نه کل toolkit)
+      # 4b. Silent install: MKL + ifx + MPI فقط
       # ============================================================
       - name: Install Intel oneAPI (MKL + ifx + MPI) silent
         shell: pwsh
@@ -155,12 +156,11 @@ jobs:
           }
           Write-Host "oneAPI installed successfully."
 
-      # اگر نصب fail شد، لاگ‌های bootstrapper را به‌عنوان artifact بگیر
       - name: Upload install logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: oneapi-install-logs
+          name: oneapi-install-logs-${{ matrix.build_type }}
           path: |
             extract.log
             bootstrapper*
@@ -200,7 +200,7 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "BLACS_LIB=$blacs_lib"
 
       # ============================================================
-      # 7. Build MUMPS 5.5.1 (superbuild, همان منطق لینوکس)
+      # 7. Build MUMPS 5.5.1 (superbuild)
       # ============================================================
       - name: Clone and Build MUMPS
         shell: pwsh
@@ -244,12 +244,29 @@ jobs:
           Write-Host "MUMPS installed at $mumps_libdir"
 
       # ============================================================
-      # 8. Configure OpenSees (Matrix: Release vs Profile)
+      # 8. Configure OpenSees (Matrix: Release vs Profile + Toolchain Fix)
       # ============================================================
       - name: Configure OpenSees
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
+
+          # --- Resolve the vcpkg root that ACTUALLY has installed packages (Fixes ZLIB error) ---
+          Write-Host "VCPKG_ROOT = $env:VCPKG_ROOT"
+          Write-Host "VCPKG_INSTALLATION_ROOT = $env:VCPKG_INSTALLATION_ROOT"
+          $cands = @($env:VCPKG_ROOT, $env:VCPKG_INSTALLATION_ROOT, "C:\vcpkg")
+          $toolchain = $null
+          foreach ($c in $cands) {
+            if ($c -and (Test-Path (Join-Path $c "installed\x64-windows\include\tcl.h"))) {
+              $toolchain = Join-Path $c "scripts\buildsystems\vcpkg.cmake"
+              break
+            }
+          }
+          if (-not $toolchain) {
+            Write-Host "ERROR: no vcpkg root with installed packages found!"
+            exit 1
+          }
+          Write-Host "FORCING toolchain: $toolchain"
 
           if ($env:BUILD_TYPE -eq "Release") {
             $build_type = "Release"
@@ -257,7 +274,6 @@ jobs:
             $cxx_flags = "/MD /O2 /Ob2 /arch:AVX2 /DNDEBUG"
             $f_flags   = "/MD /O2 /arch:AVX2"
           } else {
-            # Profile: /Zi (debug info) + /Oy- (frame pointers) برای VTune
             $build_type = "RelWithDebInfo"
             $c_flags   = "/MD /Zi /O2 /Ob1 /Oy- /arch:AVX2 /DNDEBUG"
             $cxx_flags = "/MD /Zi /O2 /Ob1 /Oy- /arch:AVX2 /DNDEBUG"
@@ -274,7 +290,7 @@ jobs:
 
           if ($env:BUILD_TYPE -eq "Release") {
             cmake -S . -B $env:OPENSEES_BUILD -G Ninja `
-              -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
+              -DCMAKE_TOOLCHAIN_FILE="$toolchain" `
               -DCMAKE_BUILD_TYPE=$build_type `
               -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_Fortran_COMPILER=ifx `
               -DCMAKE_C_FLAGS_RELEASE="$c_flags" -DCMAKE_CXX_FLAGS_RELEASE="$cxx_flags" -DCMAKE_Fortran_FLAGS_RELEASE="$f_flags" `
@@ -285,7 +301,7 @@ jobs:
               @tcltkArgs
           } else {
             cmake -S . -B $env:OPENSEES_BUILD -G Ninja `
-              -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
+              -DCMAKE_TOOLCHAIN_FILE="$toolchain" `
               -DCMAKE_BUILD_TYPE=$build_type `
               -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_Fortran_COMPILER=ifx `
               -DCMAKE_C_FLAGS_RELWITHDEBINFO="$c_flags" -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="$cxx_flags" -DCMAKE_Fortran_FLAGS_RELWITHDEBINFO="$f_flags" `
