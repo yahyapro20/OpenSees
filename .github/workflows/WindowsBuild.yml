@@ -147,12 +147,6 @@ jobs:
             echo ERROR: I_MPI_ROOT does not exist.
             exit /b 1
           )
-
-
-      # ============================================================
-      # 5. Verify exact MKL LP64 ScaLAPACK + BLACS
-      # ============================================================
-
       - name: Verify MKL LP64 ScaLAPACK and BLACS
         shell: cmd
         run: |
@@ -165,45 +159,59 @@ jobs:
           echo MKLROOT=%MKLROOT%
 
           if exist "%MKLROOT%\lib\intel64\mkl_scalapack_lp64.lib" (
-            echo FOUND:
-            echo %MKLROOT%\lib\intel64\mkl_scalapack_lp64.lib
+          echo FOUND:
+          echo %MKLROOT%\lib\intel64\mkl_scalapack_lp64.lib
           ) else (
-            echo ERROR: mkl_scalapack_lp64.lib not found
-            exit /b 1
+          echo ERROR: mkl_scalapack_lp64.lib not found
+          exit /b 1
+           )
+
+      - name: Verify MKL LP64 ScaLAPACK and BLACS
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================================"
+          Write-Host "MKL libraries"
+          Write-Host "============================================================"
+
+          Write-Host "MKLROOT = $env:MKLROOT"
+
+          if ([string]::IsNullOrWhiteSpace($env:MKLROOT)) {
+            throw "MKLROOT is not defined."
+          }
+
+          $mklLib = Join-Path $env:MKLROOT "lib\intel64"
+
+          Write-Host "MKL library directory:"
+          Write-Host $mklLib
+
+          if (!(Test-Path $mklLib)) {
+            throw "MKL library directory does not exist: $mklLib"
+          }
+
+          $required = @(
+            "mkl_scalapack_lp64.lib",
+            "mkl_blacs_intelmpi_lp64.lib",
+            "mkl_intel_lp64.lib",
+            "mkl_sequential.lib",
+            "mkl_core.lib"
           )
 
-          if exist "%MKLROOT%\lib\intel64\mkl_blacs_intelmpi_lp64.lib" (
-            echo FOUND:
-            echo %MKLROOT%\lib\intel64\mkl_blacs_intelmpi_lp64.lib
-          ) else (
-            echo ERROR: mkl_blacs_intelmpi_lp64.lib not found
-            exit /b 1
-          )
+          foreach ($lib in $required) {
 
-          if exist "%MKLROOT%\lib\intel64\mkl_intel_lp64.lib" (
-            echo FOUND:
-            echo %MKLROOT%\lib\intel64\mkl_intel_lp64.lib
-          ) else (
-            echo ERROR: mkl_intel_lp64.lib not found
-            exit /b 1
-          )
+            $path = Join-Path $mklLib $lib
 
-          if exist "%MKLROOT%\lib\intel64\mkl_sequential.lib" (
-            echo FOUND:
-            echo %MKLROOT%\lib\intel64\mkl_sequential.lib
-          ) else (
-            echo ERROR: mkl_sequential.lib not found
-            exit /b 1
-          )
+            if (Test-Path $path) {
+              Write-Host "FOUND: $path"
+            }
+            else {
+              throw "ERROR: Required MKL library not found: $path"
+            }
+          }
 
-          if exist "%MKLROOT%\lib\intel64\mkl_core.lib" (
-            echo FOUND:
-            echo %MKLROOT%\lib\intel64\mkl_core.lib
-          ) else (
-            echo ERROR: mkl_core.lib not found
-            exit /b 1
-          )
-
+          Write-Host ""
+          Write-Host "MKL LP64 verification PASSED."
 
       # ============================================================
       # 6. Install Conan
