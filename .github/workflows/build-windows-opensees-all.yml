@@ -193,7 +193,7 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "BLACS_LIB=$blacs_lib"
 
       # ============================================================
-      # 6. Build MUMPS 5.5.1 (superbuild - VS Generator)
+      # 6. Build MUMPS 5.5.1 (superbuild - VS Generator + Full Path Fix)
       # ============================================================
       - name: Clone and Build MUMPS
         shell: pwsh
@@ -201,11 +201,22 @@ jobs:
           $ErrorActionPreference = "Continue"
           git clone --depth 1 https://github.com/scivision/mumps-superbuild.git 2>&1 | ForEach-Object { Write-Host $_ }
 
+          # --- پیدا کردن مسیر کامل ifx.exe برای جلوگیری از خطای CMake ---
+          $ifxPath = (Get-Command ifx -ErrorAction SilentlyContinue).Source
+          if (-not $ifxPath) {
+            $ifxPath = Get-ChildItem -Path "C:\Program Files (x86)\Intel\oneAPI" -Recurse -Filter "ifx.exe" -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $ifxPath) {
+            Write-Host "ERROR: ifx.exe not found anywhere!"
+            exit 1
+          }
+          Write-Host "Using Fortran compiler: $ifxPath"
+
           cmake -S mumps-superbuild -B mumps-build -G "Visual Studio 17 2022" -A x64 `
             -DCMAKE_INSTALL_PREFIX="$env:MUMPS_INSTALL" `
             -DCMAKE_C_COMPILER=cl `
             -DCMAKE_CXX_COMPILER=cl `
-            -DCMAKE_Fortran_COMPILER=ifx `
+            -DCMAKE_Fortran_COMPILER="$ifxPath" `
             -DMUMPS_UPSTREAM_VERSION="5.5.1" `
             -DMUMPS_parallel=ON `
             -DMUMPS_scalapack=ON `
@@ -260,6 +271,14 @@ jobs:
           }
           Write-Host "FORCING toolchain: $toolchain"
 
+          # --- پیدا کردن مسیر کامل ifx.exe ---
+          $ifxPath = (Get-Command ifx -ErrorAction SilentlyContinue).Source
+          if (-not $ifxPath) {
+            $ifxPath = Get-ChildItem -Path "C:\Program Files (x86)\Intel\oneAPI" -Recurse -Filter "ifx.exe" -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $ifxPath) { Write-Host "ERROR: ifx.exe not found!"; exit 1 }
+          Write-Host "Using Fortran compiler for OpenSees: $ifxPath"
+
           if ($env:BUILD_TYPE -eq "Release") {
             $build_type = "Release"
             $c_flags   = "/MD /O2 /Ob2 /arch:AVX2 /DNDEBUG"
@@ -282,7 +301,7 @@ jobs:
 
           cmake -S . -B $env:OPENSEES_BUILD -G "Visual Studio 17 2022" -A x64 `
             -DCMAKE_TOOLCHAIN_FILE="$toolchain" `
-            -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_Fortran_COMPILER=ifx `
+            -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_Fortran_COMPILER="$ifxPath" `
             -DCMAKE_C_FLAGS_RELEASE="$c_flags" -DCMAKE_CXX_FLAGS_RELEASE="$cxx_flags" -DCMAKE_Fortran_FLAGS_RELEASE="$f_flags" `
             -DCMAKE_C_FLAGS_RELWITHDEBINFO="$c_flags" -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="$cxx_flags" -DCMAKE_Fortran_FLAGS_RELWITHDEBINFO="$f_flags" `
             -DBLA_VENDOR=Intel10_64lp -DBLA_STATIC=ON -DMKL_LINK=static `
