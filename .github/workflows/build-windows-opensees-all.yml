@@ -76,6 +76,7 @@ jobs:
             $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
             $vcvars = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find "VC\Auxiliary\Build\vcvars64.bat" | Select-Object -First 1
             $tcltkDir = "C:\tcltk"
+            $tcltkSlash = $tcltkDir -replace '\\','/'
 
             cmd /c "git clone --depth 1 --branch core-9-0-3 https://github.com/tcltk/tcl.git C:\srctcl 2>&1"
             cmd /c "git clone --depth 1 --branch core-9-0-3 https://github.com/tcltk/tk.git C:\srctk 2>&1"
@@ -88,12 +89,16 @@ jobs:
             if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: nmake tk failed"; exit 1 }
             cmd /c "`"$vcvars`" && cd /d C:\srctk\win && nmake -f makefile.vc install INSTALLDIR=$tcltkDir 2>&1"
 
-            $tclLib = Get-ChildItem "$tcltkDir\lib" -Filter "tcl*.lib" | Select-Object -First 1
-            $tkLib2 = Get-ChildItem "$tcltkDir\lib" -Filter "tk*.lib" | Select-Object -First 1
+            # import lib درست Tcl = tcl90.lib و import lib درست Tk = tcl9tk90.lib
+            $tclLib = Get-ChildItem "$tcltkDir\lib" -Filter "tcl90.lib" | Select-Object -First 1
+            if (-not $tclLib) { $tclLib = Get-ChildItem "$tcltkDir\lib" -Filter "tcl*.lib" | Select-Object -First 1 }
+            $tkLib2 = Get-ChildItem "$tcltkDir\lib" -Filter "tcl9tk*.lib" | Select-Object -First 1
+            if (-not $tkLib2) { $tkLib2 = Get-ChildItem "$tcltkDir\lib" -Filter "tk*.lib" | Select-Object -First 1 }
+            Write-Host "TCL lib: $($tclLib.FullName) | TK lib: $($tkLib2.FullName)"
             Add-Content -Path $env:GITHUB_ENV -Value "TCL_LIBRARY_HINT=$($tclLib.FullName -replace '\\','/')"
             Add-Content -Path $env:GITHUB_ENV -Value "TK_LIBRARY_HINT=$($tkLib2.FullName -replace '\\','/')"
-            Add-Content -Path $env:GITHUB_ENV -Value "TCLTK_INCLUDE_HINT=$tcltkDir/include"
-            Add-Content -Path $env:GITHUB_ENV -Value "TCLTK_BIN_DIR=$tcltkDir/bin"
+            Add-Content -Path $env:GITHUB_ENV -Value "TCLTK_INCLUDE_HINT=$tcltkSlash/include"
+            Add-Content -Path $env:GITHUB_ENV -Value "TCLTK_BIN_DIR=$tcltkSlash/bin"
           }
           Write-Host "=== Dependencies step finished ==="
 
@@ -174,7 +179,7 @@ jobs:
           mpiexec -version
 
       # ============================================================
-      # 5. Locate MKL static ScaLAPACK + BLACS (.lib) - slash-safe
+      # 5. Locate MKL static ScaLAPACK + BLACS (.lib)
       # ============================================================
       - name: Locate MKL static ScaLAPACK and BLACS
         shell: pwsh
@@ -190,7 +195,7 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "BLACS_LIB=$blacs_lib"
 
       # ============================================================
-      # 6. Build MUMPS 5.5.1 (superbuild - slash-safe ifx path)
+      # 6. Build MUMPS 5.5.1 (Ninja + system CMake 3.31 + ifx full path)
       # ============================================================
       - name: Clone and Build MUMPS
         shell: pwsh
@@ -205,8 +210,11 @@ jobs:
           if (-not $ifxPath) { Write-Host "ERROR: ifx.exe not found anywhere!"; exit 1 }
           $ifxPath = $ifxPath -replace '\\','/'
           Write-Host "Using Fortran compiler: $ifxPath"
+          cmake --version
 
-          cmake -S mumps-superbuild -B mumps-build -G "Visual Studio 17 2022" -A x64 `
+          cmake -S mumps-superbuild -B mumps-build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_CXX_SCAN_FOR_MODULES=OFF `
             -DCMAKE_INSTALL_PREFIX="$env:MUMPS_INSTALL" `
             -DCMAKE_C_COMPILER=cl `
             -DCMAKE_CXX_COMPILER=cl `
@@ -226,9 +234,9 @@ jobs:
             -DMKL_THREADING=sequential
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
-          cmake --build mumps-build --config Release --parallel 2>&1 | ForEach-Object { Write-Host $_ }
+          cmake --build mumps-build --parallel 2>&1 | ForEach-Object { Write-Host $_ }
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          cmake --install mumps-build --config Release
+          cmake --install mumps-build
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
           $mumps_libdir = (Join-Path $env:MUMPS_INSTALL "lib") -replace '\\','/'
@@ -241,7 +249,7 @@ jobs:
           Write-Host "MUMPS installed at $mumps_libdir"
 
       # ============================================================
-      # 7. Configure OpenSees (slash-safe toolchain + ifx)
+      # 7. Configure OpenSees (Ninja + system CMake + matrix flags)
       # ============================================================
       - name: Configure OpenSees
         shell: pwsh
@@ -249,7 +257,6 @@ jobs:
           $ErrorActionPreference = "Continue"
 
           Write-Host "VCPKG_ROOT = $env:VCPKG_ROOT"
-          Write-Host "VCPKG_INSTALLATION_ROOT = $env:VCPKG_INSTALLATION_ROOT"
           $cands = @($env:VCPKG_ROOT, $env:VCPKG_INSTALLATION_ROOT, "C:/vcpkg")
           $toolchain = $null
           foreach ($c in $cands) {
@@ -270,10 +277,12 @@ jobs:
           Write-Host "Using Fortran compiler for OpenSees: $ifxPath"
 
           if ($env:BUILD_TYPE -eq "Release") {
+            $build_type = "Release"
             $c_flags   = "/MD /O2 /Ob2 /arch:AVX2 /DNDEBUG"
             $cxx_flags = "/MD /O2 /Ob2 /arch:AVX2 /DNDEBUG"
             $f_flags   = "/MD /O2 /arch:AVX2"
           } else {
+            $build_type = "RelWithDebInfo"
             $c_flags   = "/MD /Zi /O2 /Ob1 /Oy- /arch:AVX2 /DNDEBUG"
             $cxx_flags = "/MD /Zi /O2 /Ob1 /Oy- /arch:AVX2 /DNDEBUG"
             $f_flags   = "/MD /Zi /O2 /arch:AVX2"
@@ -287,11 +296,12 @@ jobs:
             $tcltkArgs += "-DTK_INCLUDE_PATH=$env:TCLTK_INCLUDE_HINT"
           }
 
-          cmake -S . -B $env:OPENSEES_BUILD -G "Visual Studio 17 2022" -A x64 `
+          cmake -S . -B $env:OPENSEES_BUILD -G Ninja `
+            -DCMAKE_BUILD_TYPE=$build_type `
+            -DCMAKE_CXX_SCAN_FOR_MODULES=OFF `
             -DCMAKE_TOOLCHAIN_FILE="$toolchain" `
             -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_Fortran_COMPILER="$ifxPath" `
-            -DCMAKE_C_FLAGS_RELEASE="$c_flags" -DCMAKE_CXX_FLAGS_RELEASE="$cxx_flags" -DCMAKE_Fortran_FLAGS_RELEASE="$f_flags" `
-            -DCMAKE_C_FLAGS_RELWITHDEBINFO="$c_flags" -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="$cxx_flags" -DCMAKE_Fortran_FLAGS_RELWITHDEBINFO="$f_flags" `
+            -DCMAKE_C_FLAGS="$c_flags" -DCMAKE_CXX_FLAGS="$cxx_flags" -DCMAKE_Fortran_FLAGS="$f_flags" `
             -DBLA_VENDOR=Intel10_64lp -DBLA_STATIC=ON -DMKL_LINK=static `
             -DMKL_INTERFACE_FULL=intel_lp64 -DMKL_THREADING=sequential `
             -DMUMPS_DIR="$env:MUMPS_LIBDIR" -DPARALLEL=1 `
@@ -320,8 +330,7 @@ jobs:
       - name: Build OpenSees
         shell: pwsh
         run: |
-          $cfg = if ($env:BUILD_TYPE -eq "Release") { "Release" } else { "RelWithDebInfo" }
-          cmake --build $env:OPENSEES_BUILD --target OpenSees --config $cfg --parallel 2>&1 | ForEach-Object { Write-Host $_ }
+          cmake --build $env:OPENSEES_BUILD --target OpenSees --parallel 2>&1 | ForEach-Object { Write-Host $_ }
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
       # ============================================================
@@ -330,17 +339,17 @@ jobs:
       - name: Build OpenSeesSP
         shell: pwsh
         run: |
-          $cfg = if ($env:BUILD_TYPE -eq "Release") { "Release" } else { "RelWithDebInfo" }
-          cmake --build $env:OPENSEES_BUILD --target OpenSeesSP --config $cfg --parallel 2>&1 | ForEach-Object { Write-Host $_ }
+          cmake --build $env:OPENSEES_BUILD --target OpenSeesSP --parallel 2>&1 | ForEach-Object { Write-Host $_ }
           if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: OpenSeesSP build/link failed"; exit 1 }
 
       # ============================================================
-      # 11. CRITICAL LINK VERIFICATION
+      # 11. CRITICAL LINK VERIFICATION (ninja + rsp)
       # ============================================================
       - name: Verify OpenSeesSP link contains ScaLAPACK and BLACS
         shell: pwsh
         run: |
-          $sources = (Get-ChildItem -Path $env:OPENSEES_BUILD -Recurse -Include "*.rsp","*.vcxproj" -ErrorAction SilentlyContinue | ForEach-Object { Get-Content $_.FullName -Raw })
+          $sources = @(Get-Content "$env:OPENSEES_BUILD\build.ninja" -Raw -ErrorAction SilentlyContinue)
+          $sources += (Get-ChildItem -Path $env:OPENSEES_BUILD -Recurse -Filter "*.rsp" -ErrorAction SilentlyContinue | ForEach-Object { Get-Content $_.FullName -Raw })
           $all = $sources -join "`n"
           if ($all -notmatch "mkl_scalapack_lp64\.lib") { Write-Host "ERROR: ScaLAPACK not in final link"; exit 1 }
           if ($all -notmatch "mkl_blacs_intelmpi_lp64\.lib") { Write-Host "ERROR: BLACS not in final link"; exit 1 }
@@ -352,8 +361,7 @@ jobs:
       - name: Verify Intel MKL inside OpenSeesSP
         shell: pwsh
         run: |
-          $cfg = if ($env:BUILD_TYPE -eq "Release") { "Release" } else { "RelWithDebInfo" }
-          findstr /C:"Math Kernel Library" "$env:OPENSEES_BUILD\$cfg\OpenSeesSP.exe" > "$env:TEMP\mkl_sig.txt" 2>&1
+          findstr /C:"Math Kernel Library" "$env:OPENSEES_BUILD\OpenSeesSP.exe" > "$env:TEMP\mkl_sig.txt" 2>&1
           if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: MKL signature NOT found -> fallback occurred"; exit 1 }
           Get-Content "$env:TEMP\mkl_sig.txt" | Select-Object -First 5 | ForEach-Object { Write-Host $_ }
           Write-Host "MKL signature verified."
@@ -364,8 +372,7 @@ jobs:
       - name: Runtime test OpenSees
         shell: pwsh
         run: |
-          $cfg = if ($env:BUILD_TYPE -eq "Release") { "Release" } else { "RelWithDebInfo" }
-          $out = ("puts {OpenSees is working}; exit" | & "$env:OPENSEES_BUILD\$cfg\OpenSees.exe" | Out-String)
+          $out = ("puts {OpenSees is working}; exit" | & "$env:OPENSEES_BUILD\OpenSees.exe" | Out-String)
           Write-Host $out
           if ($out -notmatch "OpenSees is working") { Write-Host "ERROR: OpenSees smoke test failed"; exit 1 }
 
@@ -375,8 +382,7 @@ jobs:
       - name: Runtime test OpenSeesSP (MPI Timeout Logic)
         shell: pwsh
         run: |
-          $cfg = if ($env:BUILD_TYPE -eq "Release") { "Release" } else { "RelWithDebInfo" }
-          cd "$env:OPENSEES_BUILD\$cfg"
+          cd $env:OPENSEES_BUILD
           "system Mumps; puts {OpenSeesSP is working}; exit" | Out-File -Encoding ascii test_mumps.tcl
 
           $pinfo = New-Object System.Diagnostics.ProcessStartInfo
@@ -404,11 +410,10 @@ jobs:
       - name: Package Artifacts (Binaries + DLLs)
         shell: pwsh
         run: |
-          $cfg = if ($env:BUILD_TYPE -eq "Release") { "Release" } else { "RelWithDebInfo" }
           $artifact_dir = "artifact_${{ matrix.build_type }}"
           New-Item -ItemType Directory -Path $artifact_dir | Out-Null
-          Copy-Item "$env:OPENSEES_BUILD\$cfg\OpenSees.exe" $artifact_dir\
-          Copy-Item "$env:OPENSEES_BUILD\$cfg\OpenSeesSP.exe" $artifact_dir\
+          Copy-Item "$env:OPENSEES_BUILD\OpenSees.exe" $artifact_dir\
+          Copy-Item "$env:OPENSEES_BUILD\OpenSeesSP.exe" $artifact_dir\
 
           if ($env:VCPKG_ROOT) {
             Copy-Item "$env:VCPKG_ROOT\installed\x64-windows\bin\*.dll" $artifact_dir\ -ErrorAction SilentlyContinue
