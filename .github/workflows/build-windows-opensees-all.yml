@@ -1,4 +1,4 @@
-name: Build OpenSees Windows (Release + Profile + SP)
+name: Qwen Build OpenSees Windows (Release + Profile + SP)
 
 on:
   workflow_dispatch:
@@ -195,7 +195,7 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "BLACS_LIB=$blacs_lib"
 
       # ============================================================
-      # 6. Build MUMPS 5.5.1 (Ninja + system CMake 3.31 + ifx full path)
+      # 6. Build MUMPS 5.5.1 (Ninja + ifx full path)
       # ============================================================
       - name: Clone and Build MUMPS
         shell: pwsh
@@ -210,7 +210,6 @@ jobs:
           if (-not $ifxPath) { Write-Host "ERROR: ifx.exe not found anywhere!"; exit 1 }
           $ifxPath = $ifxPath -replace '\\','/'
           Write-Host "Using Fortran compiler: $ifxPath"
-          cmake --version
 
           cmake -S mumps-superbuild -B mumps-build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
@@ -249,32 +248,25 @@ jobs:
           Write-Host "MUMPS installed at $mumps_libdir"
 
       # ============================================================
-      # 7. Configure OpenSees (Ninja + patch $build_type bug)
+      # 7. PATCH source ($build_type bug) + Configure OpenSees
       # ============================================================
-      - name: Configure OpenSees
+      - name: Patch source and Configure OpenSees
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
 
-          # ---------- 7.0 PATCH: fix literal $build_type in OpenSees CMake ----------
+          # ---------- 7.0 PATCH: replace literal $build_type in source ----------
           $cfgName = if ($env:BUILD_TYPE -eq "Release") { "Release" } else { "RelWithDebInfo" }
-          $patched = 0
-          Get-ChildItem -Path . -Recurse -Include *.txt,*.cmake -File | ForEach-Object {
-            $raw = Get-Content $_.FullName -Raw
-            if ($raw -match '\$build_type') {
-              $new = $raw -replace '\$build_type', $cfgName
-              Set-Content -Path $_.FullName -Value $new -NoNewline
-              $patched++
-              Write-Host "PATCHED: $($_.FullName)"
+          $patched = @()
+          Get-ChildItem -Path . -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\\.git\\' } | ForEach-Object {
+            $txt = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
+            if ($txt -and $txt.Contains('$build_type')) {
+              Set-Content -Path $_.FullName -Value ($txt.Replace('$build_type', $cfgName)) -NoNewline
+              $patched += $_.FullName
             }
           }
-          Write-Host "Patched files: $patched"
-          if ($patched -eq 0) {
-            Write-Host "WARNING: literal `$build_type not found. References found:"
-            Get-ChildItem -Path . -Recurse -Include *.txt,*.cmake -File | Select-String -Pattern 'build_type' | Select-Object -First 20 | ForEach-Object {
-              Write-Host "$($_.Path):$($_.LineNumber): $($_.Line)"
-            }
-          }
+          Write-Host "Patched files: $($patched.Count)"
+          $patched | ForEach-Object { Write-Host "PATCHED: $_" }
 
           # ---------- 7.1 Resolve vcpkg toolchain ----------
           Write-Host "VCPKG_ROOT = $env:VCPKG_ROOT"
@@ -300,12 +292,10 @@ jobs:
 
           # ---------- 7.3 Flags per matrix ----------
           if ($env:BUILD_TYPE -eq "Release") {
-            $build_type = "Release"
             $c_flags   = "/MD /O2 /Ob2 /arch:AVX2 /DNDEBUG"
             $cxx_flags = "/MD /O2 /Ob2 /arch:AVX2 /DNDEBUG"
             $f_flags   = "/MD /O2 /arch:AVX2"
           } else {
-            $build_type = "RelWithDebInfo"
             $c_flags   = "/MD /Zi /O2 /Ob1 /Oy- /arch:AVX2 /DNDEBUG"
             $cxx_flags = "/MD /Zi /O2 /Ob1 /Oy- /arch:AVX2 /DNDEBUG"
             $f_flags   = "/MD /Zi /O2 /arch:AVX2"
@@ -320,7 +310,7 @@ jobs:
           }
 
           cmake -S . -B $env:OPENSEES_BUILD -G Ninja `
-            -DCMAKE_BUILD_TYPE=$build_type `
+            -DCMAKE_BUILD_TYPE=$cfgName `
             -DCMAKE_CXX_SCAN_FOR_MODULES=OFF `
             -DCMAKE_TOOLCHAIN_FILE="$toolchain" `
             -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_Fortran_COMPILER="$ifxPath" `
@@ -331,7 +321,19 @@ jobs:
             -DSCALAPACK_LIBRARIES="$env:SCALAPACK_LIB;$env:BLACS_LIB" `
             @tcltkArgs
           if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: CMake configure failed"; exit 1 }
-      
+
+          # ---------- 7.4 Verify CMAKE_BUILD_TYPE survived ----------
+          $btLine = (Select-String -Path "$env:OPENSEES_BUILD\CMakeCache.txt" -Pattern '^CMAKE_BUILD_TYPE:').Line
+          Write-Host "Cache says: $btLine"
+          if ($btLine -notmatch [regex]::Escape($cfgName)) {
+            Write-Host "ERROR: CMAKE_BUILD_TYPE is not $cfgName - something overrides it. Offending lines:"
+            Get-ChildItem -Path . -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\\.git\\' } |
+              Select-String -Pattern 'build_type' -List -ErrorAction SilentlyContinue | Select-Object -First 10 |
+              ForEach-Object { Write-Host "$($_.Path):$($_.LineNumber): $($_.Line)" }
+            exit 1
+          }
+          Write-Host "CMAKE_BUILD_TYPE verified: $cfgName"
+
       # ============================================================
       # 8. HARD GATE: Verify CMake configuration (No fallback)
       # ============================================================
