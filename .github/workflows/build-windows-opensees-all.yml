@@ -249,13 +249,34 @@ jobs:
           Write-Host "MUMPS installed at $mumps_libdir"
 
       # ============================================================
-      # 7. Configure OpenSees (Ninja + system CMake + matrix flags)
+      # 7. Configure OpenSees (Ninja + patch $build_type bug)
       # ============================================================
       - name: Configure OpenSees
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
 
+          # ---------- 7.0 PATCH: fix literal $build_type in OpenSees CMake ----------
+          $cfgName = if ($env:BUILD_TYPE -eq "Release") { "Release" } else { "RelWithDebInfo" }
+          $patched = 0
+          Get-ChildItem -Path . -Recurse -Include *.txt,*.cmake -File | ForEach-Object {
+            $raw = Get-Content $_.FullName -Raw
+            if ($raw -match '\$build_type') {
+              $new = $raw -replace '\$build_type', $cfgName
+              Set-Content -Path $_.FullName -Value $new -NoNewline
+              $patched++
+              Write-Host "PATCHED: $($_.FullName)"
+            }
+          }
+          Write-Host "Patched files: $patched"
+          if ($patched -eq 0) {
+            Write-Host "WARNING: literal `$build_type not found. References found:"
+            Get-ChildItem -Path . -Recurse -Include *.txt,*.cmake -File | Select-String -Pattern 'build_type' | Select-Object -First 20 | ForEach-Object {
+              Write-Host "$($_.Path):$($_.LineNumber): $($_.Line)"
+            }
+          }
+
+          # ---------- 7.1 Resolve vcpkg toolchain ----------
           Write-Host "VCPKG_ROOT = $env:VCPKG_ROOT"
           $cands = @($env:VCPKG_ROOT, $env:VCPKG_INSTALLATION_ROOT, "C:/vcpkg")
           $toolchain = $null
@@ -268,6 +289,7 @@ jobs:
           if (-not $toolchain) { Write-Host "ERROR: no vcpkg root with installed packages found!"; exit 1 }
           Write-Host "FORCING toolchain: $toolchain"
 
+          # ---------- 7.2 Resolve ifx full path ----------
           $ifxPath = (Get-Command ifx -ErrorAction SilentlyContinue).Source
           if (-not $ifxPath) {
             $ifxPath = Get-ChildItem -Path "C:\Program Files (x86)\Intel\oneAPI" -Recurse -Filter "ifx.exe" -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
@@ -276,6 +298,7 @@ jobs:
           $ifxPath = $ifxPath -replace '\\','/'
           Write-Host "Using Fortran compiler for OpenSees: $ifxPath"
 
+          # ---------- 7.3 Flags per matrix ----------
           if ($env:BUILD_TYPE -eq "Release") {
             $build_type = "Release"
             $c_flags   = "/MD /O2 /Ob2 /arch:AVX2 /DNDEBUG"
@@ -308,7 +331,7 @@ jobs:
             -DSCALAPACK_LIBRARIES="$env:SCALAPACK_LIB;$env:BLACS_LIB" `
             @tcltkArgs
           if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: CMake configure failed"; exit 1 }
-
+      
       # ============================================================
       # 8. HARD GATE: Verify CMake configuration (No fallback)
       # ============================================================
