@@ -34,20 +34,14 @@ jobs:
           fetch-depth: 1
 
       # ============================================================
-      # 2. CMake + Ninja
-      # ============================================================
-      - name: Setup CMake and Ninja
-        uses: lukka/get-cmake@latest
-
-      # ============================================================
-      # 3. vcpkg + Dependencies (Self-Healing: ZLIB + Tcl/Tk fix)
+      # 2. vcpkg + Dependencies (Self-Healing: ZLIB + Tcl/Tk fix)
       # ============================================================
       - name: Setup vcpkg and Install Dependencies
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
 
-          # ---------- 3.1 Locate or bootstrap vcpkg ----------
+          # ---------- 2.1 Locate or bootstrap vcpkg ----------
           $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
           if (-not $vcpkgRoot -or -not (Test-Path (Join-Path $vcpkgRoot "vcpkg.exe"))) {
             Write-Host "vcpkg not pre-installed -> bootstrapping via cmd..."
@@ -58,18 +52,17 @@ jobs:
           }
           $vcpkgExe = Join-Path $vcpkgRoot "vcpkg.exe"
           
-          # صادر کردن مسیر واقعی vcpkg برای مراحل بعد
           Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=$vcpkgRoot"
           & $vcpkgExe version
 
-          # ---------- 3.2 Install ports (zlib اضافه شد، tk حذف شد) ----------
+          # ---------- 2.2 Install ports (zlib اضافه شد، tk حذف شد) ----------
           foreach ($pkg in @("zlib:x64-windows", "tcl:x64-windows", "eigen3:x64-windows", "hdf5:x64-windows")) {
             Write-Host ">>> Installing: $pkg (this may take a few minutes per package)"
             & $vcpkgExe install $pkg 2>&1 | ForEach-Object { Write-Host $_ }
             if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: vcpkg install $pkg failed"; exit 1 }
           }
 
-          # ---------- 3.3 Detect Tk ( shipped by tcl port? ) ----------
+          # ---------- 2.3 Detect Tk ( shipped by tcl port? ) ----------
           $inst = Join-Path $vcpkgRoot "installed\x64-windows"
           $tkLib  = Get-ChildItem -Path (Join-Path $inst "lib") -Filter "tk*.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
           $tkHdr  = Get-ChildItem -Path (Join-Path $inst "include") -Recurse -Filter "tk.h" -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -83,7 +76,7 @@ jobs:
             Add-Content -Path $env:GITHUB_ENV -Value "TCLTK_INCLUDE_HINT=$($tclHdr.DirectoryName)"
             Add-Content -Path $env:GITHUB_ENV -Value "TCLTK_BIN_DIR=$inst\bin"
           } else {
-            # ---------- 3.4 Fallback: build Tcl/Tk from source with nmake ----------
+            # ---------- 2.4 Fallback: build Tcl/Tk from source with nmake ----------
             Write-Host "Tk missing -> building Tcl/Tk from source (nmake/MSVC)..."
             $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
             $vcvars = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find "VC\Auxiliary\Build\vcvars64.bat" | Select-Object -First 1
@@ -110,7 +103,7 @@ jobs:
           Write-Host "=== Dependencies step finished ==="
 
       # ============================================================
-      # 4a. Download + Extract Intel oneAPI Toolkit (روش رسمی CI)
+      # 3a. Download + Extract Intel oneAPI Toolkit (روش رسمی CI)
       # ============================================================
       - name: Download and Extract Intel oneAPI Toolkit
         shell: pwsh
@@ -133,7 +126,7 @@ jobs:
           Write-Host "Extraction OK."
 
       # ============================================================
-      # 4b. Silent install: MKL + ifx + MPI فقط
+      # 3b. Silent install: MKL + ifx + MPI فقط
       # ============================================================
       - name: Install Intel oneAPI (MKL + ifx + MPI) silent
         shell: pwsh
@@ -166,7 +159,7 @@ jobs:
             bootstrapper*
 
       # ============================================================
-      # 5. Activate and Export Intel Environment (CRITICAL)
+      # 4. Activate and Export Intel Environment (CRITICAL)
       # ============================================================
       - name: Activate and Export Intel oneAPI Environment
         shell: pwsh
@@ -186,7 +179,7 @@ jobs:
           mpiexec -version
 
       # ============================================================
-      # 6. Locate MKL static ScaLAPACK + BLACS (.lib)
+      # 5. Locate MKL static ScaLAPACK + BLACS (.lib)
       # ============================================================
       - name: Locate MKL static ScaLAPACK and BLACS
         shell: pwsh
@@ -200,7 +193,7 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "BLACS_LIB=$blacs_lib"
 
       # ============================================================
-      # 7. Build MUMPS 5.5.1 (superbuild)
+      # 6. Build MUMPS 5.5.1 (superbuild - VS Generator)
       # ============================================================
       - name: Clone and Build MUMPS
         shell: pwsh
@@ -208,8 +201,7 @@ jobs:
           $ErrorActionPreference = "Continue"
           git clone --depth 1 https://github.com/scivision/mumps-superbuild.git 2>&1 | ForEach-Object { Write-Host $_ }
 
-          cmake -S mumps-superbuild -B mumps-build -G Ninja `
-            -DCMAKE_BUILD_TYPE=Release `
+          cmake -S mumps-superbuild -B mumps-build -G "Visual Studio 17 2022" -A x64 `
             -DCMAKE_INSTALL_PREFIX="$env:MUMPS_INSTALL" `
             -DCMAKE_C_COMPILER=cl `
             -DCMAKE_CXX_COMPILER=cl `
@@ -229,9 +221,9 @@ jobs:
             -DMKL_THREADING=sequential
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
-          cmake --build mumps-build --parallel 2>&1 | ForEach-Object { Write-Host $_ }
+          cmake --build mumps-build --config Release --parallel 2>&1 | ForEach-Object { Write-Host $_ }
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          cmake --install mumps-build
+          cmake --install mumps-build --config Release
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
           $mumps_libdir = Join-Path $env:MUMPS_INSTALL "lib"
@@ -244,7 +236,7 @@ jobs:
           Write-Host "MUMPS installed at $mumps_libdir"
 
       # ============================================================
-      # 8. Configure OpenSees (Matrix: Release vs Profile + Toolchain Fix)
+      # 7. Configure OpenSees (Matrix: Release vs Profile + Toolchain Fix + VS Gen)
       # ============================================================
       - name: Configure OpenSees
         shell: pwsh
@@ -288,51 +280,35 @@ jobs:
             $tcltkArgs += "-DTK_INCLUDE_PATH=$env:TCLTK_INCLUDE_HINT"
           }
 
-          if ($env:BUILD_TYPE -eq "Release") {
-            cmake -S . -B $env:OPENSEES_BUILD -G Ninja `
-              -DCMAKE_TOOLCHAIN_FILE="$toolchain" `
-              -DCMAKE_BUILD_TYPE=$build_type `
-              -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_Fortran_COMPILER=ifx `
-              -DCMAKE_C_FLAGS_RELEASE="$c_flags" -DCMAKE_CXX_FLAGS_RELEASE="$cxx_flags" -DCMAKE_Fortran_FLAGS_RELEASE="$f_flags" `
-              -DBLA_VENDOR=Intel10_64lp -DBLA_STATIC=ON -DMKL_LINK=static `
-              -DMKL_INTERFACE_FULL=intel_lp64 -DMKL_THREADING=sequential `
-              -DMUMPS_DIR="$env:MUMPS_LIBDIR" -DPARALLEL=1 `
-              -DSCALAPACK_LIBRARIES="$env:SCALAPACK_LIB;$env:BLACS_LIB" `
-              @tcltkArgs
-          } else {
-            cmake -S . -B $env:OPENSEES_BUILD -G Ninja `
-              -DCMAKE_TOOLCHAIN_FILE="$toolchain" `
-              -DCMAKE_BUILD_TYPE=$build_type `
-              -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_Fortran_COMPILER=ifx `
-              -DCMAKE_C_FLAGS_RELWITHDEBINFO="$c_flags" -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="$cxx_flags" -DCMAKE_Fortran_FLAGS_RELWITHDEBINFO="$f_flags" `
-              -DBLA_VENDOR=Intel10_64lp -DBLA_STATIC=ON -DMKL_LINK=static `
-              -DMKL_INTERFACE_FULL=intel_lp64 -DMKL_THREADING=sequential `
-              -DMUMPS_DIR="$env:MUMPS_LIBDIR" -DPARALLEL=1 `
-              -DSCALAPACK_LIBRARIES="$env:SCALAPACK_LIB;$env:BLACS_LIB" `
-              @tcltkArgs
-          }
+          cmake -S . -B $env:OPENSEES_BUILD -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="$toolchain" `
+            -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_Fortran_COMPILER=ifx `
+            -DCMAKE_C_FLAGS_RELEASE="$c_flags" -DCMAKE_CXX_FLAGS_RELEASE="$cxx_flags" -DCMAKE_Fortran_FLAGS_RELEASE="$f_flags" `
+            -DCMAKE_C_FLAGS_RELWITHDEBINFO="$c_flags" -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="$cxx_flags" -DCMAKE_Fortran_FLAGS_RELWITHDEBINFO="$f_flags" `
+            -DBLA_VENDOR=Intel10_64lp -DBLA_STATIC=ON -DMKL_LINK=static `
+            -DMKL_INTERFACE_FULL=intel_lp64 -DMKL_THREADING=sequential `
+            -DMUMPS_DIR="$env:MUMPS_LIBDIR" -DPARALLEL=1 `
+            -DSCALAPACK_LIBRARIES="$env:SCALAPACK_LIB;$env:BLACS_LIB" `
+            @tcltkArgs
+            
           if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: CMake configure failed"; exit 1 }
 
       # ============================================================
-      # 9. HARD GATE: Verify CMake configuration (No fallback)
+      # 8. HARD GATE: Verify CMake configuration (No fallback)
       # ============================================================
       - name: Verify OpenSees CMake configuration
         shell: pwsh
         run: |
           $cache = Get-Content "$env:OPENSEES_BUILD\CMakeCache.txt" -Raw
           
-          # 1. چک کردن حضور قطعی ScaLAPACK و BLACS (حیاتی‌ترین بخش)
           if ($cache -notmatch "mkl_scalapack_lp64\.lib") { Write-Host "ERROR: ScaLAPACK missing in CMakeCache"; exit 1 }
           if ($cache -notmatch "mkl_blacs_intelmpi_lp64\.lib") { Write-Host "ERROR: BLACS missing in CMakeCache"; exit 1 }
           
-          # 2. چک کردن عدم Fallback به Netlib/OpenBLAS (جایگزین شرط BLA_VENDOR)
-          # اگر مسیرهای لینوکسی یا پکیج‌های عمومی در کش باشد، یعنی fallback شده
           if ($cache -match "openblas|reference_blas|usr/lib|x86_64-linux-gnu") { 
             Write-Host "ERROR: generic BLAS/LAPACK fallback detected!"
             exit 1 
           }
           
-          # 3. اطمینان از اینکه حداقل یک کتابخانه mkl در تنظیمات BLAS وجود دارد
           if ($cache -notmatch "mkl_intel_lp64\.lib|mkl_core\.lib") {
              Write-Host "WARNING: Standard MKL core libs not explicitly found in cache, but ScaLAPACK/BLACS are present. Proceeding..."
           }
@@ -340,64 +316,68 @@ jobs:
           Write-Host "HARD GATE PASSED: MKL + ScaLAPACK + BLACS enforced and no generic fallback detected."
 
       # ============================================================
-      # 10. Build OpenSees (Serial)
+      # 9. Build OpenSees (Serial)
       # ============================================================
       - name: Build OpenSees
         shell: pwsh
         run: |
-          cmake --build $env:OPENSEES_BUILD --target OpenSees --parallel 2>&1 | ForEach-Object { Write-Host $_ }
+          $cfg = if ($env:BUILD_TYPE -eq "Release") { "Release" } else { "RelWithDebInfo" }
+          cmake --build $env:OPENSEES_BUILD --target OpenSees --config $cfg --parallel 2>&1 | ForEach-Object { Write-Host $_ }
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
       # ============================================================
-      # 11. Build OpenSeesSP (Parallel)
+      # 10. Build OpenSeesSP (Parallel)
       # ============================================================
       - name: Build OpenSeesSP
         shell: pwsh
         run: |
-          cmake --build $env:OPENSEES_BUILD --target OpenSeesSP --parallel 2>&1 | ForEach-Object { Write-Host $_ }
+          $cfg = if ($env:BUILD_TYPE -eq "Release") { "Release" } else { "RelWithDebInfo" }
+          cmake --build $env:OPENSEES_BUILD --target OpenSeesSP --config $cfg --parallel 2>&1 | ForEach-Object { Write-Host $_ }
           if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: OpenSeesSP build/link failed"; exit 1 }
 
       # ============================================================
-      # 12. CRITICAL LINK VERIFICATION (rsp + build.ninja)
+      # 11. CRITICAL LINK VERIFICATION (VS rsp/vcxproj)
       # ============================================================
       - name: Verify OpenSeesSP link contains ScaLAPACK and BLACS
         shell: pwsh
         run: |
-          $sources = @(Get-Content "$env:OPENSEES_BUILD\build.ninja" -Raw -ErrorAction SilentlyContinue)
-          $sources += (Get-ChildItem -Path $env:OPENSEES_BUILD -Recurse -Filter "*.rsp" -ErrorAction SilentlyContinue | ForEach-Object { Get-Content $_.FullName -Raw })
+          $sources = (Get-ChildItem -Path $env:OPENSEES_BUILD -Recurse -Include "*.rsp","*.vcxproj" -ErrorAction SilentlyContinue | ForEach-Object { Get-Content $_.FullName -Raw })
           $all = $sources -join "`n"
           if ($all -notmatch "mkl_scalapack_lp64\.lib") { Write-Host "ERROR: ScaLAPACK not in final link"; exit 1 }
           if ($all -notmatch "mkl_blacs_intelmpi_lp64\.lib") { Write-Host "ERROR: BLACS not in final link"; exit 1 }
           Write-Host "LINK VERIFICATION PASSED."
 
       # ============================================================
-      # 13. MKL static-link verification (معادل strings لینوکس)
+      # 12. MKL static-link verification (معادل strings لینوکس)
       # ============================================================
       - name: Verify Intel MKL inside OpenSeesSP
         shell: pwsh
         run: |
-          findstr /C:"Math Kernel Library" "$env:OPENSEES_BUILD\OpenSeesSP.exe" > "$env:TEMP\mkl_sig.txt" 2>&1
+          $cfg = if ($env:BUILD_TYPE -eq "Release") { "Release" } else { "RelWithDebInfo" }
+          findstr /C:"Math Kernel Library" "$env:OPENSEES_BUILD\$cfg\OpenSeesSP.exe" > "$env:TEMP\mkl_sig.txt" 2>&1
           if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: MKL signature NOT found -> fallback occurred"; exit 1 }
           Get-Content "$env:TEMP\mkl_sig.txt" | Select-Object -First 5 | ForEach-Object { Write-Host $_ }
           Write-Host "MKL signature verified."
 
       # ============================================================
-      # 14. Runtime smoke test: OpenSees
+      # 13. Runtime smoke test: OpenSees
       # ============================================================
       - name: Runtime test OpenSees
         shell: pwsh
         run: |
-          $out = ("puts {OpenSees is working}; exit" | & "$env:OPENSEES_BUILD\OpenSees.exe" | Out-String)
+          $cfg = if ($env:BUILD_TYPE -eq "Release") { "Release" } else { "RelWithDebInfo" }
+          $out = ("puts {OpenSees is working}; exit" | & "$env:OPENSEES_BUILD\$cfg\OpenSees.exe" | Out-String)
           Write-Host $out
           if ($out -notmatch "OpenSees is working") { Write-Host "ERROR: OpenSees smoke test failed"; exit 1 }
 
       # ============================================================
-      # 15. Runtime smoke test: OpenSeesSP (MPI + MUMPS + Timeout)
+      # 14. Runtime smoke test: OpenSeesSP (MPI + MUMPS + Timeout)
       # ============================================================
       - name: Runtime test OpenSeesSP (MPI Timeout Logic)
         shell: pwsh
         run: |
-          cd $env:OPENSEES_BUILD
+          $cfg = if ($env:BUILD_TYPE -eq "Release") { "Release" } else { "RelWithDebInfo" }
+          cd "$env:OPENSEES_BUILD\$cfg"
           "system Mumps; puts {OpenSeesSP is working}; exit" | Out-File -Encoding ascii test_mumps.tcl
 
           $pinfo = New-Object System.Diagnostics.ProcessStartInfo
@@ -420,15 +400,16 @@ jobs:
           Write-Host "OpenSeesSP + MUMPS smoke test passed."
 
       # ============================================================
-      # 16. Package Binaries + ALL Runtime DLLs
+      # 15. Package Binaries + ALL Runtime DLLs
       # ============================================================
       - name: Package Artifacts (Binaries + DLLs)
         shell: pwsh
         run: |
+          $cfg = if ($env:BUILD_TYPE -eq "Release") { "Release" } else { "RelWithDebInfo" }
           $artifact_dir = "artifact_${{ matrix.build_type }}"
           New-Item -ItemType Directory -Path $artifact_dir | Out-Null
-          Copy-Item "$env:OPENSEES_BUILD\OpenSees.exe" $artifact_dir\
-          Copy-Item "$env:OPENSEES_BUILD\OpenSeesSP.exe" $artifact_dir\
+          Copy-Item "$env:OPENSEES_BUILD\$cfg\OpenSees.exe" $artifact_dir\
+          Copy-Item "$env:OPENSEES_BUILD\$cfg\OpenSeesSP.exe" $artifact_dir\
 
           # vcpkg DLLs (Tcl/Tk/HDF5/zlib)
           if ($env:VCPKG_ROOT) {
@@ -449,7 +430,7 @@ jobs:
           Get-ChildItem $artifact_dir | ForEach-Object { Write-Host $_.Name }
 
       # ============================================================
-      # 17. Upload Artifacts
+      # 16. Upload Artifacts
       # ============================================================
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
