@@ -41,7 +41,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Continue"
 
-          # ---------- 2.1 Locate or bootstrap vcpkg ----------
           $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
           if (-not $vcpkgRoot -or -not (Test-Path (Join-Path $vcpkgRoot "vcpkg.exe"))) {
             Write-Host "vcpkg not pre-installed -> bootstrapping via cmd..."
@@ -51,32 +50,28 @@ jobs:
             if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: vcpkg bootstrap failed"; exit 1 }
           }
           $vcpkgExe = Join-Path $vcpkgRoot "vcpkg.exe"
-          
-          Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=$vcpkgRoot"
+          Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=$($vcpkgRoot -replace '\\','/')"
           & $vcpkgExe version
 
-          # ---------- 2.2 Install ports (zlib اضافه شد، tk حذف شد) ----------
           foreach ($pkg in @("zlib:x64-windows", "tcl:x64-windows", "eigen3:x64-windows", "hdf5:x64-windows")) {
             Write-Host ">>> Installing: $pkg (this may take a few minutes per package)"
             & $vcpkgExe install $pkg 2>&1 | ForEach-Object { Write-Host $_ }
             if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: vcpkg install $pkg failed"; exit 1 }
           }
 
-          # ---------- 2.3 Detect Tk ( shipped by tcl port? ) ----------
           $inst = Join-Path $vcpkgRoot "installed\x64-windows"
           $tkLib  = Get-ChildItem -Path (Join-Path $inst "lib") -Filter "tk*.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
           $tkHdr  = Get-ChildItem -Path (Join-Path $inst "include") -Recurse -Filter "tk.h" -ErrorAction SilentlyContinue | Select-Object -First 1
 
           if ($tkLib -and $tkHdr) {
             Write-Host "vcpkg tcl port ships Tk -> using vcpkg paths."
-            $tclLib  = Get-ChildItem -Path (Join-Path $inst "lib") -Filter "tcl*.lib" | Select-Object -First 1
-            $tclHdr  = Get-ChildItem -Path (Join-Path $inst "include") -Recurse -Filter "tcl.h" | Select-Object -First 1
-            Add-Content -Path $env:GITHUB_ENV -Value "TCL_LIBRARY_HINT=$($tclLib.FullName)"
-            Add-Content -Path $env:GITHUB_ENV -Value "TK_LIBRARY_HINT=$($tkLib.FullName)"
-            Add-Content -Path $env:GITHUB_ENV -Value "TCLTK_INCLUDE_HINT=$($tclHdr.DirectoryName)"
-            Add-Content -Path $env:GITHUB_ENV -Value "TCLTK_BIN_DIR=$inst\bin"
+            $tclLib = Get-ChildItem -Path (Join-Path $inst "lib") -Filter "tcl*.lib" | Select-Object -First 1
+            $tclHdr = Get-ChildItem -Path (Join-Path $inst "include") -Recurse -Filter "tcl.h" | Select-Object -First 1
+            Add-Content -Path $env:GITHUB_ENV -Value "TCL_LIBRARY_HINT=$($tclLib.FullName -replace '\\','/')"
+            Add-Content -Path $env:GITHUB_ENV -Value "TK_LIBRARY_HINT=$($tkLib.FullName -replace '\\','/')"
+            Add-Content -Path $env:GITHUB_ENV -Value "TCLTK_INCLUDE_HINT=$($tclHdr.DirectoryName -replace '\\','/')"
+            Add-Content -Path $env:GITHUB_ENV -Value "TCLTK_BIN_DIR=$($inst -replace '\\','/')/bin"
           } else {
-            # ---------- 2.4 Fallback: build Tcl/Tk from source with nmake ----------
             Write-Host "Tk missing -> building Tcl/Tk from source (nmake/MSVC)..."
             $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
             $vcvars = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find "VC\Auxiliary\Build\vcvars64.bat" | Select-Object -First 1
@@ -95,15 +90,15 @@ jobs:
 
             $tclLib = Get-ChildItem "$tcltkDir\lib" -Filter "tcl*.lib" | Select-Object -First 1
             $tkLib2 = Get-ChildItem "$tcltkDir\lib" -Filter "tk*.lib" | Select-Object -First 1
-            Add-Content -Path $env:GITHUB_ENV -Value "TCL_LIBRARY_HINT=$($tclLib.FullName)"
-            Add-Content -Path $env:GITHUB_ENV -Value "TK_LIBRARY_HINT=$($tkLib2.FullName)"
-            Add-Content -Path $env:GITHUB_ENV -Value "TCLTK_INCLUDE_HINT=$tcltkDir\include"
-            Add-Content -Path $env:GITHUB_ENV -Value "TCLTK_BIN_DIR=$tcltkDir\bin"
+            Add-Content -Path $env:GITHUB_ENV -Value "TCL_LIBRARY_HINT=$($tclLib.FullName -replace '\\','/')"
+            Add-Content -Path $env:GITHUB_ENV -Value "TK_LIBRARY_HINT=$($tkLib2.FullName -replace '\\','/')"
+            Add-Content -Path $env:GITHUB_ENV -Value "TCLTK_INCLUDE_HINT=$tcltkDir/include"
+            Add-Content -Path $env:GITHUB_ENV -Value "TCLTK_BIN_DIR=$tcltkDir/bin"
           }
           Write-Host "=== Dependencies step finished ==="
 
       # ============================================================
-      # 3a. Download + Extract Intel oneAPI Toolkit (روش رسمی CI)
+      # 3a. Download + Extract Intel oneAPI Toolkit
       # ============================================================
       - name: Download and Extract Intel oneAPI Toolkit
         shell: pwsh
@@ -112,7 +107,7 @@ jobs:
           $workdir = $env:GITHUB_WORKSPACE
           $url = "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/4144bec3-82ce-4672-bd71-5c93a79cd5e7/intel-oneapi-toolkit-2026.1.0.191_offline.exe"
 
-          Write-Host "Downloading Intel oneAPI Toolkit (چند گیگابایت — صبور باش)..."
+          Write-Host "Downloading Intel oneAPI Toolkit..."
           curl.exe --output "$workdir\webimage.exe" --url $url --retry 5 --retry-delay 5
           if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: download failed"; exit 1 }
 
@@ -126,7 +121,7 @@ jobs:
           Write-Host "Extraction OK."
 
       # ============================================================
-      # 3b. Silent install: MKL + ifx + MPI فقط
+      # 3b. Silent install: MKL + ifx + MPI
       # ============================================================
       - name: Install Intel oneAPI (MKL + ifx + MPI) silent
         shell: pwsh
@@ -159,7 +154,7 @@ jobs:
             bootstrapper*
 
       # ============================================================
-      # 4. Activate and Export Intel Environment (CRITICAL)
+      # 4. Activate and Export Intel Environment
       # ============================================================
       - name: Activate and Export Intel oneAPI Environment
         shell: pwsh
@@ -179,7 +174,7 @@ jobs:
           mpiexec -version
 
       # ============================================================
-      # 5. Locate MKL static ScaLAPACK + BLACS (.lib)
+      # 5. Locate MKL static ScaLAPACK + BLACS (.lib) - slash-safe
       # ============================================================
       - name: Locate MKL static ScaLAPACK and BLACS
         shell: pwsh
@@ -187,13 +182,15 @@ jobs:
           $scalapack_lib = Get-ChildItem -Path $env:MKLROOT -Recurse -Filter "mkl_scalapack_lp64.lib" | Select-Object -First 1 -ExpandProperty FullName
           $blacs_lib = Get-ChildItem -Path $env:MKLROOT -Recurse -Filter "mkl_blacs_intelmpi_lp64.lib" | Select-Object -First 1 -ExpandProperty FullName
           if (-not $scalapack_lib -or -not $blacs_lib) { Write-Host "ERROR: ScaLAPACK/BLACS .lib not found"; exit 1 }
+          $scalapack_lib = $scalapack_lib -replace '\\','/'
+          $blacs_lib = $blacs_lib -replace '\\','/'
           Write-Host "SCALAPACK_LIB=$scalapack_lib"
           Write-Host "BLACS_LIB=$blacs_lib"
           Add-Content -Path $env:GITHUB_ENV -Value "SCALAPACK_LIB=$scalapack_lib"
           Add-Content -Path $env:GITHUB_ENV -Value "BLACS_LIB=$blacs_lib"
 
       # ============================================================
-      # 6. Build MUMPS 5.5.1 (superbuild - VS Generator + Full Path Fix)
+      # 6. Build MUMPS 5.5.1 (superbuild - slash-safe ifx path)
       # ============================================================
       - name: Clone and Build MUMPS
         shell: pwsh
@@ -201,15 +198,12 @@ jobs:
           $ErrorActionPreference = "Continue"
           git clone --depth 1 https://github.com/scivision/mumps-superbuild.git 2>&1 | ForEach-Object { Write-Host $_ }
 
-          # --- پیدا کردن مسیر کامل ifx.exe برای جلوگیری از خطای CMake ---
           $ifxPath = (Get-Command ifx -ErrorAction SilentlyContinue).Source
           if (-not $ifxPath) {
             $ifxPath = Get-ChildItem -Path "C:\Program Files (x86)\Intel\oneAPI" -Recurse -Filter "ifx.exe" -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
           }
-          if (-not $ifxPath) {
-            Write-Host "ERROR: ifx.exe not found anywhere!"
-            exit 1
-          }
+          if (-not $ifxPath) { Write-Host "ERROR: ifx.exe not found anywhere!"; exit 1 }
+          $ifxPath = $ifxPath -replace '\\','/'
           Write-Host "Using Fortran compiler: $ifxPath"
 
           cmake -S mumps-superbuild -B mumps-build -G "Visual Studio 17 2022" -A x64 `
@@ -237,8 +231,8 @@ jobs:
           cmake --install mumps-build --config Release
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
-          $mumps_libdir = Join-Path $env:MUMPS_INSTALL "lib"
-          if (-not (Test-Path (Join-Path $mumps_libdir "dmumps.lib"))) {
+          $mumps_libdir = (Join-Path $env:MUMPS_INSTALL "lib") -replace '\\','/'
+          if (-not (Test-Path "$mumps_libdir/dmumps.lib")) {
             Write-Host "ERROR: dmumps.lib not found in $mumps_libdir"
             Get-ChildItem $env:MUMPS_INSTALL -Recurse | ForEach-Object { Write-Host $_.FullName }
             exit 1
@@ -247,45 +241,39 @@ jobs:
           Write-Host "MUMPS installed at $mumps_libdir"
 
       # ============================================================
-      # 7. Configure OpenSees (Matrix: Release vs Profile + Toolchain Fix + VS Gen)
+      # 7. Configure OpenSees (slash-safe toolchain + ifx)
       # ============================================================
       - name: Configure OpenSees
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
 
-          # --- Resolve the vcpkg root that ACTUALLY has installed packages (Fixes ZLIB error) ---
           Write-Host "VCPKG_ROOT = $env:VCPKG_ROOT"
           Write-Host "VCPKG_INSTALLATION_ROOT = $env:VCPKG_INSTALLATION_ROOT"
-          $cands = @($env:VCPKG_ROOT, $env:VCPKG_INSTALLATION_ROOT, "C:\vcpkg")
+          $cands = @($env:VCPKG_ROOT, $env:VCPKG_INSTALLATION_ROOT, "C:/vcpkg")
           $toolchain = $null
           foreach ($c in $cands) {
-            if ($c -and (Test-Path (Join-Path $c "installed\x64-windows\include\tcl.h"))) {
-              $toolchain = Join-Path $c "scripts\buildsystems\vcpkg.cmake"
+            if ($c -and (Test-Path "$c/installed/x64-windows/include/tcl.h")) {
+              $toolchain = "$c/scripts/buildsystems/vcpkg.cmake"
               break
             }
           }
-          if (-not $toolchain) {
-            Write-Host "ERROR: no vcpkg root with installed packages found!"
-            exit 1
-          }
+          if (-not $toolchain) { Write-Host "ERROR: no vcpkg root with installed packages found!"; exit 1 }
           Write-Host "FORCING toolchain: $toolchain"
 
-          # --- پیدا کردن مسیر کامل ifx.exe ---
           $ifxPath = (Get-Command ifx -ErrorAction SilentlyContinue).Source
           if (-not $ifxPath) {
             $ifxPath = Get-ChildItem -Path "C:\Program Files (x86)\Intel\oneAPI" -Recurse -Filter "ifx.exe" -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
           }
           if (-not $ifxPath) { Write-Host "ERROR: ifx.exe not found!"; exit 1 }
+          $ifxPath = $ifxPath -replace '\\','/'
           Write-Host "Using Fortran compiler for OpenSees: $ifxPath"
 
           if ($env:BUILD_TYPE -eq "Release") {
-            $build_type = "Release"
             $c_flags   = "/MD /O2 /Ob2 /arch:AVX2 /DNDEBUG"
             $cxx_flags = "/MD /O2 /Ob2 /arch:AVX2 /DNDEBUG"
             $f_flags   = "/MD /O2 /arch:AVX2"
           } else {
-            $build_type = "RelWithDebInfo"
             $c_flags   = "/MD /Zi /O2 /Ob1 /Oy- /arch:AVX2 /DNDEBUG"
             $cxx_flags = "/MD /Zi /O2 /Ob1 /Oy- /arch:AVX2 /DNDEBUG"
             $f_flags   = "/MD /Zi /O2 /arch:AVX2"
@@ -309,7 +297,6 @@ jobs:
             -DMUMPS_DIR="$env:MUMPS_LIBDIR" -DPARALLEL=1 `
             -DSCALAPACK_LIBRARIES="$env:SCALAPACK_LIB;$env:BLACS_LIB" `
             @tcltkArgs
-            
           if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: CMake configure failed"; exit 1 }
 
       # ============================================================
@@ -319,19 +306,12 @@ jobs:
         shell: pwsh
         run: |
           $cache = Get-Content "$env:OPENSEES_BUILD\CMakeCache.txt" -Raw
-          
           if ($cache -notmatch "mkl_scalapack_lp64\.lib") { Write-Host "ERROR: ScaLAPACK missing in CMakeCache"; exit 1 }
           if ($cache -notmatch "mkl_blacs_intelmpi_lp64\.lib") { Write-Host "ERROR: BLACS missing in CMakeCache"; exit 1 }
-          
-          if ($cache -match "openblas|reference_blas|usr/lib|x86_64-linux-gnu") { 
+          if ($cache -match "openblas|reference_blas|usr/lib|x86_64-linux-gnu") {
             Write-Host "ERROR: generic BLAS/LAPACK fallback detected!"
-            exit 1 
+            exit 1
           }
-          
-          if ($cache -notmatch "mkl_intel_lp64\.lib|mkl_core\.lib") {
-             Write-Host "WARNING: Standard MKL core libs not explicitly found in cache, but ScaLAPACK/BLACS are present. Proceeding..."
-          }
-
           Write-Host "HARD GATE PASSED: MKL + ScaLAPACK + BLACS enforced and no generic fallback detected."
 
       # ============================================================
@@ -355,7 +335,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: OpenSeesSP build/link failed"; exit 1 }
 
       # ============================================================
-      # 11. CRITICAL LINK VERIFICATION (VS rsp/vcxproj)
+      # 11. CRITICAL LINK VERIFICATION
       # ============================================================
       - name: Verify OpenSeesSP link contains ScaLAPACK and BLACS
         shell: pwsh
@@ -367,7 +347,7 @@ jobs:
           Write-Host "LINK VERIFICATION PASSED."
 
       # ============================================================
-      # 12. MKL static-link verification (معادل strings لینوکس)
+      # 12. MKL static-link verification
       # ============================================================
       - name: Verify Intel MKL inside OpenSeesSP
         shell: pwsh
@@ -430,15 +410,12 @@ jobs:
           Copy-Item "$env:OPENSEES_BUILD\$cfg\OpenSees.exe" $artifact_dir\
           Copy-Item "$env:OPENSEES_BUILD\$cfg\OpenSeesSP.exe" $artifact_dir\
 
-          # vcpkg DLLs (Tcl/Tk/HDF5/zlib)
           if ($env:VCPKG_ROOT) {
             Copy-Item "$env:VCPKG_ROOT\installed\x64-windows\bin\*.dll" $artifact_dir\ -ErrorAction SilentlyContinue
           }
-          # Tcl/Tk DLLs (source-build fallback)
           if ($env:TCLTK_BIN_DIR) {
             Copy-Item "$env:TCLTK_BIN_DIR\*.dll" $artifact_dir\ -ErrorAction SilentlyContinue
           }
-          # Intel runtime DLLs (OpenMP / Fortran / MPI)
           $intel_root = "C:\Program Files (x86)\Intel\oneAPI"
           foreach ($dll in @("libiomp5md.dll","libifcoremd.dll","libifportmd.dll","libmmd.dll","svml_dispmd.dll","impi.dll","impicxx.dll")) {
             foreach ($sub in @("compiler","mpi")) {
