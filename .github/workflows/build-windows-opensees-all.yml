@@ -25,6 +25,9 @@ jobs:
           - build_type: Profile
             cmake_cfg: RelWithDebInfo
 
+    env:
+      CFG: ${{ matrix.cmake_cfg }}
+
     steps:
 
       # ============================================================
@@ -38,13 +41,12 @@ jobs:
           fetch-depth: 1
 
       # ============================================================
-      # 2. vcpkg + Dependencies
+      # 2. vcpkg + Dependencies (hdf5 با feature.hl — معادل libhdf5-dev لینوکس)
       # ============================================================
       - name: Setup vcpkg and Install Dependencies
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
-
           $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
           if (-not $vcpkgRoot -or -not (Test-Path (Join-Path $vcpkgRoot "vcpkg.exe"))) {
             Write-Host "vcpkg not pre-installed -> bootstrapping via cmd..."
@@ -57,9 +59,10 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=$($vcpkgRoot -replace '\\','/')"
           & $vcpkgExe version
 
-          foreach ($pkg in @("zlib:x64-windows", "tcl:x64-windows", "eigen3:x64-windows", "hdf5:x64-windows")) {
+          # hdf5 باید با feature.hl نصب شود وگرنه hdf5_hl.h وجود نخواهد داشت
+          foreach ($pkg in @("zlib:x64-windows", "tcl:x64-windows", "eigen3:x64-windows", "hdf5[core,hl,szip,zlib]:x64-windows")) {
             Write-Host ">>> Installing: $pkg"
-            & $vcpkgExe install $pkg 2>&1 | ForEach-Object { Write-Host $_ }
+            & $vcpkgExe install "$pkg" 2>&1 | ForEach-Object { Write-Host $_ }
             if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: vcpkg install $pkg failed"; exit 1 }
           }
 
@@ -114,11 +117,9 @@ jobs:
           $ErrorActionPreference = "Continue"
           $workdir = $env:GITHUB_WORKSPACE
           $url = "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/4144bec3-82ce-4672-bd71-5c93a79cd5e7/intel-oneapi-toolkit-2026.1.0.191_offline.exe"
-
           Write-Host "Downloading Intel oneAPI Toolkit..."
           curl.exe --output "$workdir\webimage.exe" --url $url --retry 5 --retry-delay 5
           if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: download failed"; exit 1 }
-
           Write-Host "Extracting bootstrapper..."
           cmd /c "cd /d $workdir && start /b /wait webimage.exe -s -x -f webimage_extracted --log extract.log"
           if (-not (Test-Path "$workdir\webimage_extracted\bootstrapper.exe")) {
@@ -137,10 +138,8 @@ jobs:
           $ErrorActionPreference = "Continue"
           $workdir = $env:GITHUB_WORKSPACE
           $components = "intel.oneapi.win.mkl.devel:intel.oneapi.win.ifort-compiler:intel.oneapi.win.mpi.devel"
-
           cmd /c "cd /d $workdir && webimage_extracted\bootstrapper.exe -s --action install --components=$components --eula=accept -p=NEED_VS2017_INTEGRATION=0 -p=NEED_VS2019_INTEGRATION=0 -p=NEED_VS2022_INTEGRATION=0 --log-dir=$workdir 2>&1"
           Write-Host "bootstrapper exit code: $LASTEXITCODE"
-
           $setvars = "C:\Program Files (x86)\Intel\oneAPI\setvars.bat"
           if (-not (Test-Path $setvars)) {
             Write-Host "ERROR: setvars.bat not found after install"
@@ -151,15 +150,6 @@ jobs:
             exit 1
           }
           Write-Host "oneAPI installed successfully."
-
-      - name: Upload install logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: oneapi-install-logs-${{ matrix.build_type }}
-          path: |
-            extract.log
-            bootstrapper*
 
       # ============================================================
       # 4. Activate and Export Intel Environment
@@ -182,7 +172,7 @@ jobs:
           mpiexec -version
 
       # ============================================================
-      # 5. Locate MKL static ScaLAPACK + BLACS (.lib)
+      # 5. Locate MKL static ScaLAPACK + BLACS
       # ============================================================
       - name: Locate MKL static ScaLAPACK and BLACS
         shell: pwsh
@@ -198,14 +188,13 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "BLACS_LIB=$blacs_lib"
 
       # ============================================================
-      # 6. Build MUMPS 5.5.1 (Ninja + ifx)
+      # 6. Build MUMPS 5.5.1
       # ============================================================
       - name: Clone and Build MUMPS
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
           git clone --depth 1 https://github.com/scivision/mumps-superbuild.git 2>&1 | ForEach-Object { Write-Host $_ }
-
           $ifxPath = (Get-Command ifx -ErrorAction SilentlyContinue).Source
           if (-not $ifxPath) {
             $ifxPath = Get-ChildItem -Path "C:\Program Files (x86)\Intel\oneAPI" -Recurse -Filter "ifx.exe" -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
@@ -251,14 +240,13 @@ jobs:
           Write-Host "MUMPS installed at $mumps_libdir"
 
       # ============================================================
-      # 7. Configure OpenSees (Ninja + HDF5 include/link FIX)
+      # 7. Configure OpenSees (با گارد hdf5_hl + تشخیص خودکار vcpkg)
       # ============================================================
       - name: Configure OpenSees
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
 
-          # --- resolve vcpkg root that actually has packages ---
           $cands = @($env:VCPKG_ROOT, $env:VCPKG_INSTALLATION_ROOT, "C:/vcpkg")
           $toolchain = $null
           $vcpkgRootUsed = $null
@@ -272,14 +260,20 @@ jobs:
           if (-not $toolchain) { Write-Host "ERROR: no vcpkg root with installed packages found!"; exit 1 }
           Write-Host "FORCING toolchain: $toolchain (root: $vcpkgRootUsed)"
 
-          # --- HDF5 fix: vcpkg config-mode does not fill HDF5_INCLUDE_DIRS,
-          #     so force the include dir into compile flags and hdf5_hl into link ---
           $vcpkgInc = "$vcpkgRootUsed/installed/x64-windows/include"
           $vcpkgLib = "$vcpkgRootUsed/installed/x64-windows/lib"
-          if (-not (Test-Path "$vcpkgInc/hdf5_hl.h")) { Write-Host "ERROR: hdf5_hl.h not found in $vcpkgInc"; exit 1 }
-          Write-Host "HDF5 include forced: $vcpkgInc"
+          if (-not (Test-Path "$vcpkgInc/hdf5_hl.h")) {
+            Write-Host "ERROR: hdf5_hl.h not found in $vcpkgInc"
+            Get-ChildItem $vcpkgInc -Filter "hdf5*" | ForEach-Object { Write-Host "  found: $($_.Name)" }
+            exit 1
+          }
+          if (-not (Test-Path "$vcpkgLib/hdf5_hl.lib")) {
+            Write-Host "ERROR: hdf5_hl.lib not found in $vcpkgLib"
+            Get-ChildItem $vcpkgLib -Filter "hdf5*" | ForEach-Object { Write-Host "  found: $($_.Name)" }
+            exit 1
+          }
+          Write-Host "HDF5 HL header + lib verified."
 
-          # --- ifx full path ---
           $ifxPath = (Get-Command ifx -ErrorAction SilentlyContinue).Source
           if (-not $ifxPath) {
             $ifxPath = Get-ChildItem -Path "C:\Program Files (x86)\Intel\oneAPI" -Recurse -Filter "ifx.exe" -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
@@ -288,8 +282,7 @@ jobs:
           $ifxPath = $ifxPath -replace '\\','/'
           Write-Host "Using Fortran compiler for OpenSees: $ifxPath"
 
-          # --- flags per matrix + forced HDF5 include ---
-          if ($env:BUILD_TYPE -eq "Release") {
+          if ($env:CFG -eq "Release") {
             $build_type = "Release"
             $c_flags   = "/MD /O2 /Ob2 /arch:AVX2 /DNDEBUG"
             $cxx_flags = "/MD /O2 /Ob2 /arch:AVX2 /DNDEBUG"
@@ -321,7 +314,6 @@ jobs:
             -DCMAKE_CXX_FLAGS="$cxx_flags" `
             -DCMAKE_Fortran_FLAGS="$f_flags" `
             -DCMAKE_EXE_LINKER_FLAGS="$exe_linker" `
-            -DHDF5_INCLUDE_DIRS="$vcpkgInc" `
             -DBLA_VENDOR=Intel10_64lp -DBLA_STATIC=ON -DMKL_LINK=static `
             -DMKL_INTERFACE_FULL=intel_lp64 -DMKL_THREADING=sequential `
             -DMUMPS_DIR="$env:MUMPS_LIBDIR" -DPARALLEL=1 `
@@ -343,7 +335,7 @@ jobs:
           Write-Host "HARD GATE PASSED: MKL lp64 + ScaLAPACK + BLACS enforced."
 
       # ============================================================
-      # 9. Build OpenSees (Serial) - log saved for summary
+      # 9. Build OpenSees
       # ============================================================
       - name: Build OpenSees
         shell: pwsh
@@ -352,7 +344,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: Build OpenSees failed"; exit 1 }
 
       # ============================================================
-      # 10. Build OpenSeesSP (Parallel) - log saved for summary
+      # 10. Build OpenSeesSP
       # ============================================================
       - name: Build OpenSeesSP
         shell: pwsh
@@ -361,7 +353,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: Build OpenSeesSP failed"; exit 1 }
 
       # ============================================================
-      # 11. CRITICAL LINK VERIFICATION
+      # 11. LINK VERIFICATION
       # ============================================================
       - name: Verify OpenSeesSP link contains ScaLAPACK and BLACS
         shell: pwsh
@@ -369,12 +361,13 @@ jobs:
           $sources = @(Get-Content "$env:OPENSEES_BUILD\build.ninja" -Raw -ErrorAction SilentlyContinue)
           $sources += (Get-ChildItem -Path $env:OPENSEES_BUILD -Recurse -Filter "*.rsp" -ErrorAction SilentlyContinue | ForEach-Object { Get-Content $_.FullName -Raw })
           $all = $sources -join "`n"
-          if ($all -notmatch "mkl_scalapack_lp64\.lib") { Write-Host "ERROR: ScaLAPACK not in final link"; exit 1 }
-          if ($all -notmatch "mkl_blacs_intelmpi_lp64\.lib") { Write-Host "ERROR: BLACS not in final link"; exit 1 }
+          if ($all -notmatch "mkl_scalapack_lp64\.lib") { Write-Host "ERROR: ScaLAPACK lp64 not in final link"; exit 1 }
+          if ($all -notmatch "mkl_blacs_intelmpi_lp64\.lib") { Write-Host "ERROR: BLACS lp64 not in final link"; exit 1 }
+          if ($all -match "mkl_scalapack_ilp64\.lib") { Write-Host "ERROR: ilp64 in final link"; exit 1 }
           Write-Host "LINK VERIFICATION PASSED."
 
       # ============================================================
-      # 12. MKL static-link verification
+      # 12. MKL signature check
       # ============================================================
       - name: Verify Intel MKL inside OpenSeesSP
         shell: pwsh
@@ -385,7 +378,7 @@ jobs:
           Write-Host "MKL signature verified."
 
       # ============================================================
-      # 13. Runtime smoke test: OpenSees
+      # 13. Smoke test OpenSees
       # ============================================================
       - name: Runtime test OpenSees
         shell: pwsh
@@ -395,14 +388,13 @@ jobs:
           if ($out -notmatch "OpenSees is working") { Write-Host "ERROR: OpenSees smoke test failed"; exit 1 }
 
       # ============================================================
-      # 14. Runtime smoke test: OpenSeesSP (MPI + MUMPS + Timeout)
+      # 14. Smoke test OpenSeesSP + MUMPS (با timeout)
       # ============================================================
       - name: Runtime test OpenSeesSP (MPI Timeout Logic)
         shell: pwsh
         run: |
           cd $env:OPENSEES_BUILD
           "system Mumps; puts {OpenSeesSP is working}; exit" | Out-File -Encoding ascii test_mumps.tcl
-
           $pinfo = New-Object System.Diagnostics.ProcessStartInfo
           $pinfo.FileName = "mpiexec"
           $pinfo.Arguments = "-n 2 .\OpenSeesSP.exe test_mumps.tcl"
@@ -423,7 +415,7 @@ jobs:
           Write-Host "OpenSeesSP + MUMPS smoke test passed."
 
       # ============================================================
-      # 15. Package Binaries + ALL Runtime DLLs
+      # 15. Package Binaries + DLLs
       # ============================================================
       - name: Package Artifacts (Binaries + DLLs)
         shell: pwsh
@@ -432,7 +424,6 @@ jobs:
           New-Item -ItemType Directory -Path $artifact_dir | Out-Null
           Copy-Item "$env:OPENSEES_BUILD\OpenSees.exe" $artifact_dir\
           Copy-Item "$env:OPENSEES_BUILD\OpenSeesSP.exe" $artifact_dir\
-
           if ($env:VCPKG_ROOT) {
             Copy-Item "$env:VCPKG_ROOT\installed\x64-windows\bin\*.dll" $artifact_dir\ -ErrorAction SilentlyContinue
           }
@@ -460,7 +451,7 @@ jobs:
           compression-level: 6
 
       # ============================================================
-      # 17. Error Summary (only on failure)
+      # 17. Error Summary (فقط هنگام شکست)
       # ============================================================
       - name: Error Summary (only on failure)
         if: failure()
