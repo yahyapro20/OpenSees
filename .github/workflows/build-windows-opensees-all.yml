@@ -31,9 +31,6 @@ jobs:
             cxx_flags: "/MD /Zi /O2 /Ob1 /Oy- /arch:AVX2 /DNDEBUG"
             f_flags: "/MD /Zi /O2 /QxCORE-AVX2"
 
-    env:
-      CFG: ${{ matrix.cmake_cfg }}
-
     steps:
 
       # ============================================================
@@ -63,7 +60,8 @@ jobs:
             if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: vcpkg bootstrap failed"; exit 1 }
           }
           $vcpkgExe = Join-Path $vcpkgRoot "vcpkg.exe"
-          Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=$($vcpkgRoot -replace '\\','/')"
+          $vcpkgSlash = $vcpkgRoot -replace '\\','/'
+          Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_USED=$vcpkgSlash"
           & $vcpkgExe version
 
           foreach ($pkg in @("zlib:x64-windows", "tcl:x64-windows", "eigen3:x64-windows", "hdf5:x64-windows")) {
@@ -102,7 +100,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: nmake tk failed"; exit 1 }
             cmd /c "`"$vcvars`" && cd /d C:\srctk\win && nmake -f makefile.vc install INSTALLDIR=$tcltkDir 2>&1"
 
-            # import lib درست Tcl = tcl90.lib و Tk = tcl9tk90.lib (نه stub)
+            # import lib درست: tcl90.lib و tcl9tk90.lib (نه stub)
             $tclLib = Get-ChildItem "$tcltkDir\lib" -Filter "tcl90.lib" | Select-Object -First 1
             if (-not $tclLib) { $tclLib = Get-ChildItem "$tcltkDir\lib" -Filter "tcl*.lib" | Where-Object { $_.Name -notmatch 'stub' } | Select-Object -First 1 }
             $tkLib2 = Get-ChildItem "$tcltkDir\lib" -Filter "tcl9tk*.lib" | Select-Object -First 1
@@ -139,7 +137,7 @@ jobs:
           Write-Host "Extraction OK."
 
       # ============================================================
-      # 3b. Silent install: MKL + ifx + MPI (بدون VS integration -> Ninja لازم است)
+      # 3b. Silent install: MKL + ifx + MPI
       # ============================================================
       - name: Install Intel oneAPI (MKL + ifx + MPI) silent
         shell: pwsh
@@ -161,15 +159,6 @@ jobs:
             exit 1
           }
           Write-Host "oneAPI installed successfully."
-
-      - name: Upload install logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: oneapi-install-logs-${{ matrix.build_type }}
-          path: |
-            extract.log
-            bootstrapper*
 
       # ============================================================
       # 4. Activate and Export Intel Environment
@@ -208,7 +197,7 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "BLACS_LIB=$blacs_lib"
 
       # ============================================================
-      # 6. Build MUMPS 5.5.1 (Ninja + ifx — بدون نیاز به VS integration)
+      # 6. Build MUMPS 5.5.1 (Ninja + ifx full path)
       # ============================================================
       - name: Clone and Build MUMPS
         shell: pwsh
@@ -226,7 +215,7 @@ jobs:
 
           cmake -S mumps-superbuild -B mumps-build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_CXX_SCAN_FOR_MODULES=OFF `
+            -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON `
             -DCMAKE_INSTALL_PREFIX="$env:MUMPS_INSTALL" `
             -DCMAKE_C_COMPILER=cl `
             -DCMAKE_CXX_COMPILER=cl `
@@ -261,16 +250,15 @@ jobs:
           Write-Host "MUMPS installed at $mumps_libdir"
 
       # ============================================================
-      # 7. Configure OpenSees (Ninja + مقادیر قطعی از matrix)
+      # 7. Configure OpenSees (Ninja + RESPONSE FILES fix)
       # ============================================================
       - name: Configure OpenSees
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
 
-          # ---------- 7.1 Resolve vcpkg toolchain ----------
-          Write-Host "VCPKG_ROOT = $env:VCPKG_ROOT"
-          $cands = @($env:VCPKG_ROOT, $env:VCPKG_INSTALLATION_ROOT, "C:/vcpkg")
+          # --- Resolve the vcpkg root that ACTUALLY has installed packages ---
+          $cands = @($env:VCPKG_USED, $env:VCPKG_ROOT, $env:VCPKG_INSTALLATION_ROOT, "C:/vcpkg")
           $toolchain = $null
           foreach ($c in $cands) {
             if ($c -and (Test-Path "$c/installed/x64-windows/include/tcl.h")) {
@@ -281,7 +269,7 @@ jobs:
           if (-not $toolchain) { Write-Host "ERROR: no vcpkg root with installed packages found!"; exit 1 }
           Write-Host "FORCING toolchain: $toolchain"
 
-          # ---------- 7.2 Resolve ifx full path ----------
+          # --- ifx full path ---
           $ifxPath = (Get-Command ifx -ErrorAction SilentlyContinue).Source
           if (-not $ifxPath) {
             $ifxPath = Get-ChildItem -Path "C:\Program Files (x86)\Intel\oneAPI" -Recurse -Filter "ifx.exe" -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
@@ -290,7 +278,7 @@ jobs:
           $ifxPath = $ifxPath -replace '\\','/'
           Write-Host "Using Fortran compiler for OpenSees: $ifxPath"
 
-          # ---------- 7.3 Tcl/Tk hints ----------
+          # --- Tcl/Tk hints ---
           $tcltkArgs = @()
           if ($env:TCL_LIBRARY_HINT) {
             $tcltkArgs += "-DTCL_LIBRARY=$env:TCL_LIBRARY_HINT"
@@ -299,9 +287,16 @@ jobs:
             $tcltkArgs += "-DTK_INCLUDE_PATH=$env:TCLTK_INCLUDE_HINT"
           }
 
-          # ---------- 7.4 Configure (build type و flags مستقیم از matrix: بدون متغیر shell) ----------
+          # --- Configure: response files = fix for "The command line is too long" ---
           cmake -S . -B $env:OPENSEES_BUILD -G Ninja `
             -DCMAKE_BUILD_TYPE="${{ matrix.cmake_cfg }}" `
+            -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON `
+            -DCMAKE_C_USE_RESPONSE_FILE_FOR_INCLUDES=ON `
+            -DCMAKE_CXX_USE_RESPONSE_FILE_FOR_INCLUDES=ON `
+            -DCMAKE_Fortran_USE_RESPONSE_FILE_FOR_INCLUDES=ON `
+            -DCMAKE_C_USE_RESPONSE_FILE_FOR_OBJECTS=ON `
+            -DCMAKE_CXX_USE_RESPONSE_FILE_FOR_OBJECTS=ON `
+            -DCMAKE_Fortran_USE_RESPONSE_FILE_FOR_OBJECTS=ON `
             -DCMAKE_CXX_SCAN_FOR_MODULES=OFF `
             -DCMAKE_TOOLCHAIN_FILE="$toolchain" `
             -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_Fortran_COMPILER="$ifxPath" `
@@ -315,11 +310,11 @@ jobs:
             @tcltkArgs
           if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: CMake configure failed"; exit 1 }
 
-          # ---------- 7.5 Verify build type + scalapack interface ----------
+          # --- Verify build type + scalapack interface ---
           $btLine = (Select-String -Path "$env:OPENSEES_BUILD\CMakeCache.txt" -Pattern '^CMAKE_BUILD_TYPE:').Line
           Write-Host "Cache says: $btLine"
-          if ($btLine -notmatch [regex]::Escape($env:CFG)) {
-            Write-Host "ERROR: CMAKE_BUILD_TYPE is not $env:CFG"
+          if ($btLine -notmatch [regex]::Escape("${{ matrix.cmake_cfg }}")) {
+            Write-Host "ERROR: CMAKE_BUILD_TYPE is not ${{ matrix.cmake_cfg }}"
             exit 1
           }
           $scLine = (Select-String -Path "$env:OPENSEES_BUILD\CMakeCache.txt" -Pattern '^SCALAPACK_LIBRARIES:').Line
@@ -328,7 +323,7 @@ jobs:
             Write-Host "ERROR: SCALAPACK_LIBRARIES still ilp64 (must be lp64 to match MUMPS)"
             exit 1
           }
-          Write-Host "Configure verified: CFG=$env:CFG, SCALAPACK=lp64"
+          Write-Host "Configure verified: CFG=${{ matrix.cmake_cfg }}, SCALAPACK=lp64"
 
       # ============================================================
       # 8. HARD GATE: No Netlib fallback, no ilp64
@@ -347,25 +342,25 @@ jobs:
           Write-Host "HARD GATE PASSED: MKL lp64 + ScaLAPACK + BLACS enforced."
 
       # ============================================================
-      # 9. Build OpenSees (Serial)
+      # 9. Build OpenSees (Serial) - log saved for summary
       # ============================================================
       - name: Build OpenSees
         shell: pwsh
         run: |
-          cmake --build $env:OPENSEES_BUILD --target OpenSees --parallel 2>&1 | ForEach-Object { Write-Host $_ }
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          cmake --build $env:OPENSEES_BUILD --target OpenSees --parallel 2>&1 | Tee-Object -FilePath "$env:GITHUB_WORKSPACE\build_opensees.log"
+          if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: Build OpenSees failed"; exit 1 }
 
       # ============================================================
-      # 10. Build OpenSeesSP (Parallel)
+      # 10. Build OpenSeesSP (Parallel) - log saved for summary
       # ============================================================
       - name: Build OpenSeesSP
         shell: pwsh
         run: |
-          cmake --build $env:OPENSEES_BUILD --target OpenSeesSP --parallel 2>&1 | ForEach-Object { Write-Host $_ }
-          if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: OpenSeesSP build/link failed"; exit 1 }
+          cmake --build $env:OPENSEES_BUILD --target OpenSeesSP --parallel 2>&1 | Tee-Object -FilePath "$env:GITHUB_WORKSPACE\build_openseessp.log"
+          if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: Build OpenSeesSP failed"; exit 1 }
 
       # ============================================================
-      # 11. CRITICAL LINK VERIFICATION (ninja + rsp)
+      # 11. CRITICAL LINK VERIFICATION (build.ninja + rsp)
       # ============================================================
       - name: Verify OpenSeesSP link contains ScaLAPACK and BLACS
         shell: pwsh
@@ -379,7 +374,7 @@ jobs:
           Write-Host "LINK VERIFICATION PASSED."
 
       # ============================================================
-      # 12. MKL static-link verification
+      # 12. MKL static-link verification (معادل strings لینوکس)
       # ============================================================
       - name: Verify Intel MKL inside OpenSeesSP
         shell: pwsh
@@ -418,7 +413,7 @@ jobs:
           $p = New-Object System.Diagnostics.Process
           $p.StartInfo = $pinfo
           $p.Start() | Out-Null
-          $exited = $p.WaitForExit(30000)
+          $exited = $p.WaitForExit(60000)
           $stdout = $p.StandardOutput.ReadToEnd()
           $stderr = $p.StandardError.ReadToEnd()
           if (-not $exited) { Write-Host "Killed by timeout (expected for MPI rank hang)"; $p.Kill() }
@@ -438,12 +433,17 @@ jobs:
           Copy-Item "$env:OPENSEES_BUILD\OpenSees.exe" $artifact_dir\
           Copy-Item "$env:OPENSEES_BUILD\OpenSeesSP.exe" $artifact_dir\
 
-          if ($env:VCPKG_ROOT) {
-            Copy-Item "$env:VCPKG_ROOT\installed\x64-windows\bin\*.dll" $artifact_dir\ -ErrorAction SilentlyContinue
+          # vcpkg DLLs (از همان root ای که واقعاً نصب کرده‌ایم)
+          $vcpkgUsed = $env:VCPKG_USED
+          if (-not $vcpkgUsed) { $vcpkgUsed = $env:VCPKG_INSTALLATION_ROOT }
+          if ($vcpkgUsed) {
+            Copy-Item "$vcpkgUsed\installed\x64-windows\bin\*.dll" $artifact_dir\ -ErrorAction SilentlyContinue
           }
+          # Tcl/Tk DLLs
           if ($env:TCLTK_BIN_DIR) {
             Copy-Item "$env:TCLTK_BIN_DIR\*.dll" $artifact_dir\ -ErrorAction SilentlyContinue
           }
+          # Intel runtime DLLs (OpenMP / Fortran / MPI)
           $intel_root = "C:\Program Files (x86)\Intel\oneAPI"
           foreach ($dll in @("libiomp5md.dll","libifcoremd.dll","libifportmd.dll","libmmd.dll","svml_dispmd.dll","impi.dll","impicxx.dll")) {
             foreach ($sub in @("compiler","mpi")) {
@@ -463,3 +463,30 @@ jobs:
           path: artifact_${{ matrix.build_type }}/
           if-no-files-found: error
           compression-level: 6
+
+      # ============================================================
+      # 17. Error Summary (فقط وقتی چیزی fail شد) -> تب Summary
+      # ============================================================
+      - name: Error Summary (only on failure)
+        if: failure()
+        shell: pwsh
+        run: |
+          $fence = '```'
+          $sum = "# Build Failed - Key Errors`n`n"
+          foreach ($log in @("$env:GITHUB_WORKSPACE\build_opensees.log", "$env:GITHUB_WORKSPACE\build_openseessp.log")) {
+            if (Test-Path $log) {
+              $hits = Get-Content $log | Select-String -Pattern 'FAILED:|error C|error LNK|fatal|too long' | Select-Object -First 25
+              if ($hits) {
+                $sum += "## $([System.IO.Path]::GetFileName($log))`n" + $fence + "`n"
+                $sum += (($hits | ForEach-Object { $_.Line }) -join "`n") + "`n" + $fence + "`n`n"
+              }
+            }
+          }
+          $cache = "$env:OPENSEES_BUILD\CMakeCache.txt"
+          if (Test-Path $cache) {
+            $bt = (Select-String -Path $cache -Pattern '^CMAKE_BUILD_TYPE:').Line
+            $sc = (Select-String -Path $cache -Pattern '^SCALAPACK_LIBRARIES:').Line
+            $sum += "## CMake Cache`n- $bt`n- $sc`n"
+          }
+          $sum | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          Write-Host "Summary written. Check the Summary tab at the top of the run page."
