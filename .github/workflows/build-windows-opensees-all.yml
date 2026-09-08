@@ -180,6 +180,12 @@ jobs:
         run: |
           $ErrorActionPreference = "Continue"
 
+          # --- 7.0 Clean build directory to avoid stale ninja files ---
+          if (Test-Path $env:OPENSEES_BUILD) {
+            Remove-Item -Recurse -Force $env:OPENSEES_BUILD
+          }
+          New-Item -ItemType Directory -Path $env:OPENSEES_BUILD | Out-Null
+
           # --- 7.1 resolve the vcpkg root that ACTUALLY has the packages ---
           $cands = @($env:VCPKG_ROOT, $env:VCPKG_INSTALLATION_ROOT, "C:/vcpkg")
           $toolchain = $null
@@ -245,10 +251,11 @@ jobs:
             $tcltkArgs += "-DTK_INCLUDE_PATH=$env:TCLTK_INCLUDE_HINT"
           }
 
-          # --- 7.6 configure (response files fix "command line is too long") ---
+          # --- 7.6 configure (CRITICAL FIX for "command line is too long") ---
           cmake -S . -B $env:OPENSEES_BUILD -G Ninja `
             -DCMAKE_BUILD_TYPE="$cfg" `
             -DCMAKE_CXX_SCAN_FOR_MODULES=OFF `
+            -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON `
             -DCMAKE_Fortran_USE_RESPONSE_FILE_FOR_INCLUDES=ON `
             -DCMAKE_C_USE_RESPONSE_FILE_FOR_INCLUDES=ON `
             -DCMAKE_CXX_USE_RESPONSE_FILE_FOR_INCLUDES=ON `
