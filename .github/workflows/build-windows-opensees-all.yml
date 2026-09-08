@@ -172,30 +172,71 @@ jobs:
           if (-not (Test-Path "$mumps_libdir/dmumps.lib")) { Write-Host "ERROR: dmumps.lib missing"; exit 1 }
           Add-Content -Path $env:GITHUB_ENV -Value "MUMPS_LIBDIR=$mumps_libdir"
 
-      # ---------- Configure OpenSees ----------
+      # ============================================================
+      # 7. Configure OpenSees (Ninja + response files + MKL static + MUMPS)
+      # ============================================================
       - name: Configure OpenSees
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
+
+          # --- 7.1 resolve the vcpkg root that ACTUALLY has the packages ---
           $cands = @($env:VCPKG_ROOT, $env:VCPKG_INSTALLATION_ROOT, "C:/vcpkg")
-          $toolchain = $null; $vcpkgRootUsed = $null
+          $toolchain = $null
+          $vcpkgRootUsed = $null
           foreach ($c in $cands) {
-            if ($c -and (Test-Path "$c/installed/x64-windows/include/tcl.h")) { $toolchain = "$c/scripts/buildsystems/vcpkg.cmake"; $vcpkgRootUsed = $c; break }
+            if ($c -and (Test-Path "$c/installed/x64-windows/include/tcl.h")) {
+              $toolchain = "$c/scripts/buildsystems/vcpkg.cmake"
+              $vcpkgRootUsed = $c
+              break
+            }
           }
-          if (-not $toolchain) { Write-Host "ERROR: no vcpkg root with packages"; exit 1 }
+          if (-not $toolchain) { Write-Host "ERROR: no vcpkg root with installed packages found!"; exit 1 }
+          Write-Host "FORCING toolchain: $toolchain (root: $vcpkgRootUsed)"
+
+          # --- 7.2 self-heal HDF5 HL (hdf5_hl.h / hdf5_hl.lib) ---
           $vcpkgInc = "$vcpkgRootUsed/installed/x64-windows/include"
           $vcpkgLib = "$vcpkgRootUsed/installed/x64-windows/lib"
-
-          $ifxPath = (Get-Command ifx -ErrorAction SilentlyContinue).Source
-          if (-not $ifxPath) { $ifxPath = Get-ChildItem "C:\Program Files (x86)\Intel\oneAPI" -Recurse -Filter "ifx.exe" | Select-Object -First 1 -ExpandProperty FullName }
-          $ifxPath = $ifxPath -replace '\\','/'
-
-          if ($env:CFG -eq "Release") {
-            $c_flags = "/MD /O2 /Ob2 /arch:AVX2 /DNDEBUG"; $cxx_flags = $c_flags; $f_flags = "/MD /O2 /arch:AVX2"
-          } else {
-            $c_flags = "/MD /Zi /O2 /Ob1 /Oy- /arch:AVX2 /DNDEBUG"; $cxx_flags = $c_flags; $f_flags = "/MD /Zi /O2 /arch:AVX2"
+          if (-not (Test-Path "$vcpkgInc/hdf5_hl.h")) {
+            Write-Host "hdf5_hl.h missing -> installing hdf5[hl] feature..."
+            & "$vcpkgRootUsed\vcpkg.exe" install "hdf5[hl]:x64-windows" 2>&1 | ForEach-Object { Write-Host $_ }
+            if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: vcpkg install hdf5[hl] failed"; exit 1 }
           }
+          if (-not (Test-Path "$vcpkgInc/hdf5_hl.h")) { Write-Host "ERROR: hdf5_hl.h still missing"; exit 1 }
+          $hdf5hl = "$vcpkgLib/hdf5_hl.lib"
+          if (-not (Test-Path $hdf5hl)) {
+            $hdf5hl = (Get-ChildItem $vcpkgLib -Filter "hdf5_hl*.lib" | Select-Object -First 1).FullName
+          }
+          Write-Host "HDF5 HL lib: $hdf5hl"
 
+          # --- 7.3 ifx full path ---
+          $ifxPath = (Get-Command ifx -ErrorAction SilentlyContinue).Source
+          if (-not $ifxPath) {
+            $ifxPath = Get-ChildItem -Path "C:\Program Files (x86)\Intel\oneAPI" -Recurse -Filter "ifx.exe" -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $ifxPath) { Write-Host "ERROR: ifx.exe not found!"; exit 1 }
+          $ifxPath = $ifxPath -replace '\\','/'
+          Write-Host "Fortran compiler: $ifxPath"
+
+          # --- 7.4 per-matrix flags (Release vs Profile) ---
+          $cfg = $env:CFG
+          if (-not $cfg) {
+            if ($env:BUILD_TYPE -eq "Profile") { $cfg = "RelWithDebInfo" } else { $cfg = "Release" }
+          }
+          if ($cfg -eq "Release") {
+            $c_flags   = "/MD /O2 /Ob2 /arch:AVX2 /DNDEBUG"
+            $cxx_flags = "/MD /O2 /Ob2 /arch:AVX2 /DNDEBUG"
+            $f_flags   = "/MD /O2 /arch:AVX2"
+          } else {
+            $c_flags   = "/MD /Zi /O2 /Ob1 /Oy- /arch:AVX2 /DNDEBUG"
+            $cxx_flags = "/MD /Zi /O2 /Ob1 /Oy- /arch:AVX2 /DNDEBUG"
+            $f_flags   = "/MD /Zi /O2 /arch:AVX2"
+          }
+          $c_flags   += " /I`"$vcpkgInc`""
+          $cxx_flags += " /I`"$vcpkgInc`""
+          Write-Host "Config: $cfg"
+
+          # --- 7.5 Tcl/Tk hints ---
           $tcltkArgs = @()
           if ($env:TCL_LIBRARY_HINT) {
             $tcltkArgs += "-DTCL_LIBRARY=$env:TCL_LIBRARY_HINT"
@@ -204,23 +245,37 @@ jobs:
             $tcltkArgs += "-DTK_INCLUDE_PATH=$env:TCLTK_INCLUDE_HINT"
           }
 
+          # --- 7.6 configure (response files fix "command line is too long") ---
           cmake -S . -B $env:OPENSEES_BUILD -G Ninja `
-            -DCMAKE_BUILD_TYPE="$env:CFG" `
+            -DCMAKE_BUILD_TYPE="$cfg" `
             -DCMAKE_CXX_SCAN_FOR_MODULES=OFF `
+            -DCMAKE_Fortran_USE_RESPONSE_FILE_FOR_INCLUDES=ON `
             -DCMAKE_C_USE_RESPONSE_FILE_FOR_INCLUDES=ON `
             -DCMAKE_CXX_USE_RESPONSE_FILE_FOR_INCLUDES=ON `
-            -DCMAKE_Fortran_USE_RESPONSE_FILE_FOR_INCLUDES=ON `
             -DCMAKE_TOOLCHAIN_FILE="$toolchain" `
             -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_Fortran_COMPILER="$ifxPath" `
-            -DCMAKE_C_FLAGS="$c_flags" -DCMAKE_CXX_FLAGS="$cxx_flags" -DCMAKE_Fortran_FLAGS="$f_flags" `
-            -DCMAKE_EXE_LINKER_FLAGS="`"$vcpkgLib/hdf5_hl.lib`"" `
+            -DCMAKE_C_FLAGS="$c_flags" `
+            -DCMAKE_CXX_FLAGS="$cxx_flags" `
+            -DCMAKE_Fortran_FLAGS="$f_flags" `
+            -DCMAKE_EXE_LINKER_FLAGS="`"$hdf5hl`"" `
             -DHDF5_INCLUDE_DIRS="$vcpkgInc" `
             -DBLA_VENDOR=Intel10_64lp -DBLA_STATIC=ON -DMKL_LINK=static `
             -DMKL_INTERFACE_FULL=intel_lp64 -DMKL_THREADING=sequential `
             -DMUMPS_DIR="$env:MUMPS_LIBDIR" -DPARALLEL=1 `
             -DSCALAPACK_LIBRARIES="$env:SCALAPACK_LIB;$env:BLACS_LIB" `
             @tcltkArgs
-          if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: configure failed"; exit 1 }
+          if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: CMake configure failed"; exit 1 }
+
+          # --- 7.7 post-configure verification ---
+          $cachePath = "$env:OPENSEES_BUILD\CMakeCache.txt"
+          $cache = Get-Content $cachePath -Raw
+          $bt = (Select-String -Path $cachePath -Pattern '^CMAKE_BUILD_TYPE:').Line
+          Write-Host "Cache: $bt"
+          if ($bt -notmatch [regex]::Escape($cfg)) { Write-Host "ERROR: CMAKE_BUILD_TYPE mismatch ($bt vs $cfg)"; exit 1 }
+          if ($cache -notmatch "mkl_scalapack_lp64\.lib") { Write-Host "ERROR: ScaLAPACK lp64 missing in cache"; exit 1 }
+          if ($cache -notmatch "mkl_blacs_intelmpi_lp64\.lib") { Write-Host "ERROR: BLACS lp64 missing in cache"; exit 1 }
+          if ($cache -match "mkl_scalapack_ilp64|mkl_blacs_intelmpi_ilp64") { Write-Host "ERROR: ilp64 leaked into cache"; exit 1 }
+          Write-Host "Configure verified: CFG=$cfg | MKL lp64 + ScaLAPACK + BLACS OK"
 
       - name: HARD GATE verify cache
         shell: pwsh
