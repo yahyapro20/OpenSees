@@ -1,4 +1,4 @@
-name: qwen Build OpenSees Windows (Release + Profile + SP)
+name: Qwen Build OpenSees Windows (Release + Profile + SP)
 
 on:
   workflow_dispatch:
@@ -364,4 +364,89 @@ jobs:
       - name: Runtime test OpenSees
         shell: pwsh
         run: |
-          $out = ("puts {OpenSees is working}; exit" | & "$env:OPENSEES_BUILD\OpenSees.exe" 
+          $out = ("puts {OpenSees is working}; exit" | & "$env:OPENSEES_BUILD\OpenSees.exe" | Out-String)
+          Write-Host $out
+          if ($out -notmatch "OpenSees is working") { Write-Host "ERROR: OpenSees smoke test failed"; exit 1 }
+
+      - name: Runtime test OpenSeesSP (MPI + MUMPS, with timeout)
+        shell: pwsh
+        run: |
+          cd $env:OPENSEES_BUILD
+          "system Mumps; puts {OpenSeesSP is working}; exit" | Out-File -Encoding ascii test_mumps.tcl
+          $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+          $pinfo.FileName = "mpiexec"
+          $pinfo.Arguments = "-n 2 .\OpenSeesSP.exe test_mumps.tcl"
+          $pinfo.RedirectStandardOutput = $true
+          $pinfo.RedirectStandardError = $true
+          $pinfo.UseShellExecute = $false
+          $pinfo.CreateNoWindow = $true
+          $p = New-Object System.Diagnostics.Process
+          $p.StartInfo = $pinfo
+          $p.Start() | Out-Null
+          $exited = $p.WaitForExit(60000)
+          $stdout = $p.StandardOutput.ReadToEnd()
+          $stderr = $p.StandardError.ReadToEnd()
+          if (-not $exited) { Write-Host "Killed by timeout (expected for MPI rank hang)"; $p.Kill() }
+          Write-Host "STDOUT: $stdout"
+          if ($stdout -notmatch "OpenSeesSP is working") { Write-Host "ERROR: OpenSeesSP smoke test failed"; exit 1 }
+          Write-Host "OpenSeesSP + MUMPS smoke test passed."
+
+      # ============================================================
+      # Packaging (exe + همه‌ی DLLهای runtime)
+      # ============================================================
+      - name: Package Artifacts (Binaries + DLLs)
+        shell: pwsh
+        run: |
+          $artifact_dir = "artifact_${{ matrix.build_type }}"
+          New-Item -ItemType Directory -Path $artifact_dir | Out-Null
+          Copy-Item "$env:OPENSEES_BUILD\OpenSees.exe" $artifact_dir\
+          Copy-Item "$env:OPENSEES_BUILD\OpenSeesSP.exe" $artifact_dir\
+          if ($env:VCPKG_ROOT) {
+            Copy-Item "$env:VCPKG_ROOT\installed\x64-windows\bin\*.dll" $artifact_dir\ -ErrorAction SilentlyContinue
+          }
+          if ($env:TCLTK_BIN_DIR) {
+            Copy-Item "$env:TCLTK_BIN_DIR\*.dll" $artifact_dir\ -ErrorAction SilentlyContinue
+          }
+          $intel_root = "C:\Program Files (x86)\Intel\oneAPI"
+          foreach ($dll in @("libiomp5md.dll","libifcoremd.dll","libifportmd.dll","libmmd.dll","svml_dispmd.dll","impi.dll","impicxx.dll")) {
+            foreach ($sub in @("compiler","mpi")) {
+              $hit = Get-ChildItem -Path (Join-Path $intel_root $sub) -Recurse -Filter $dll -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($hit) { Copy-Item $hit.FullName $artifact_dir\ -ErrorAction SilentlyContinue; break }
+            }
+          }
+          Get-ChildItem $artifact_dir | ForEach-Object { Write-Host $_.Name }
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenSees-Windows-${{ matrix.build_type }}-AVX2
+          path: artifact_${{ matrix.build_type }}/
+          if-no-files-found: error
+          compression-level: 6
+
+      # ============================================================
+      # Error Summary (فقط هنگام شکست)
+      # ============================================================
+      - name: Error Summary (only on failure)
+        if: failure()
+        shell: pwsh
+        run: |
+          $fence = '```'
+          $sum = "# Build Failed - Key Errors`n`n"
+          foreach ($log in @("$env:GITHUB_WORKSPACE\build_opensees.log", "$env:GITHUB_WORKSPACE\build_openseessp.log")) {
+            if (Test-Path $log) {
+              $hits = Get-Content $log | Select-String -Pattern 'FAILED:|fatal error|error C|error LNK|The command line is too long' | Select-Object -First 25
+              if ($hits) {
+                $sum += "## $([System.IO.Path]::GetFileName($log))`n" + $fence + "`n"
+                $sum += (($hits | ForEach-Object { $_.Line }) -join "`n") + "`n" + $fence + "`n`n"
+              }
+            }
+          }
+          $cache = "$env:OPENSEES_BUILD\CMakeCache.txt"
+          if (Test-Path $cache) {
+            $bt = (Select-String -Path $cache -Pattern '^CMAKE_BUILD_TYPE:').Line
+            $sc = (Select-String -Path $cache -Pattern '^SCALAPACK_LIBRARIES:').Line
+            $sum += "## CMake Cache`n- $bt`n- $sc`n"
+          }
+          $sum | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          Write-Host "Summary written. Check the Summary tab."
