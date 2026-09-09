@@ -209,18 +209,20 @@ jobs:
           if (-not (Test-Path $file)) { Write-Host "File not found: $file"; exit 0 }
           $content = Get-Content $file -Raw
           if ($content -match '_OPENSEES_STAT_FIX_') { Write-Host "Already patched."; exit 0 }
+          
+          # CRITICAL: Use #define to rename 'stat' to 'slu_stat'
+          # This avoids conflict with Windows CRT function stat() in sys/stat.h
+          # Unlike #undef (which doesn't work for functions), #define works everywhere
           $guard = @"
           // _OPENSEES_STAT_FIX_: Prevent stat redefinition with Windows SDK 10.0.26100+
           #ifdef _WIN32
-          #include <sys/stat.h>
-          #undef stat
+          #define stat slu_stat
           #endif
 
           "@
           $content = $guard + "`n" + $content
           Set-Content $file $content -NoNewline
-          Write-Host "Patched stat conflict in: $file"
-
+          Write-Host "Patched stat conflict in: $file (using #define stat slu_stat)"
       - name: Remove SuperLU_DIST from OpenSeesSP (not needed for nonlinear analysis)
         shell: pwsh
         run: |
