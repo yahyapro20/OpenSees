@@ -202,7 +202,6 @@ jobs:
           }
           Write-Host "CRT patch done"
 
-
       - name: Patch SuperLU_DIST stat conflict (Windows SDK 10.0.26100+)
         shell: pwsh
         run: |
@@ -221,6 +220,8 @@ jobs:
           $content = $guard + "`n" + $content
           Set-Content $file $content -NoNewline
           Write-Host "Patched stat conflict in: $file"
+
+          
       # ============================================================
       # Configure OpenSees (Ninja + response files + MKL static + MUMPS + Tcl 8.6)
       # ============================================================
