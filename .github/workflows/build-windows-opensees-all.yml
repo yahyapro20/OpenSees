@@ -202,6 +202,25 @@ jobs:
           }
           Write-Host "CRT patch done"
 
+
+      - name: Patch SuperLU_DIST stat conflict (Windows SDK 10.0.26100+)
+        shell: pwsh
+        run: |
+          $file = "SRC\system_of_eqn\linearSOE\sparseGEN\DistributedSuperLU.cpp"
+          if (-not (Test-Path $file)) { Write-Host "File not found: $file"; exit 0 }
+          $content = Get-Content $file -Raw
+          if ($content -match '_OPENSEES_STAT_FIX_') { Write-Host "Already patched."; exit 0 }
+          $guard = @"
+          // _OPENSEES_STAT_FIX_: Prevent stat redefinition with Windows SDK 10.0.26100+
+          #ifdef _WIN32
+          #include <sys/stat.h>
+          #undef stat
+          #endif
+
+          "@
+          $content = $guard + "`n" + $content
+          Set-Content $file $content -NoNewline
+          Write-Host "Patched stat conflict in: $file"
       # ============================================================
       # Configure OpenSees (Ninja + response files + MKL static + MUMPS + Tcl 8.6)
       # ============================================================
