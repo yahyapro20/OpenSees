@@ -328,10 +328,33 @@ jobs:
           if ($cache -match "tcl9|tk9") { Write-Host "ERROR: Tcl 9 leaked into build!"; exit 1 }
           Write-Host "HARD GATE PASSED"
 
-      - name: Build OpenSees
+      - name: Build OpenSeesSP
         shell: pwsh
         run: |
-          cmake --build $env:OPENSEES_BUILD --target OpenSees --parallel 2>&1 | Tee-Object -FilePath "$env:GITHUB_WORKSPACE\build_opensees.log"
+          # ============================================================
+          # FIX: OpenSees links MUMPS as <libdir>/dmumps (no .lib) on Windows.
+          # Rewrite build.ninja to point at the real .lib files (they exist).
+          # ============================================================
+          $ninja  = Join-Path $env:OPENSEES_BUILD "build.ninja"
+          $libdir = ($env:MUMPS_LIBDIR -replace '\\','/')
+          $libs   = Get-ChildItem $env:MUMPS_LIBDIR -Filter *.lib -ErrorAction SilentlyContinue
+
+          if ((Test-Path $ninja) -and $libs) {
+            $content = Get-Content $ninja -Raw
+            foreach ($lib in $libs) {
+              $noext   = "$libdir/$($lib.BaseName)"
+              $withext = "$noext.lib"
+              $pattern = [regex]::Escape($noext) + '(?![\w.])'
+              $content = [regex]::Replace($content, $pattern, $withext)
+              Write-Host "Mapped MUMPS lib: $noext  ->  $withext"
+            }
+            Set-Content -Path $ninja -Value $content -NoNewline
+            Write-Host "build.ninja patched for MUMPS .lib"
+          } else {
+            Write-Host "WARNING: could not patch build.ninja (exists=$(Test-Path $ninja), libs=$($libs.Count))"
+          }
+
+          cmake --build $env:OPENSEES_BUILD --target OpenSeesSP --parallel 2>&1 | Tee-Object -FilePath "$env:GITHUB_WORKSPACE\build_openseessp.log"
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Diagnose MUMPS linkage (ground truth)
