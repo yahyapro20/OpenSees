@@ -221,6 +221,27 @@ jobs:
           Set-Content $file $content -NoNewline
           Write-Host "Patched stat conflict in: $file"
 
+      - name: Remove SuperLU_DIST from OpenSeesSP (not needed for nonlinear analysis)
+        shell: pwsh
+        run: |
+          $cmakeFile = "CMakeLists.txt"
+          if (-not (Test-Path $cmakeFile)) { Write-Host "ERROR: CMakeLists.txt not found"; exit 1 }
+          $content = Get-Content $cmakeFile -Raw
+
+          # Comment out ALL DistributedSuperLU-related source files in OpenSeesSP target
+          $patterns = @(
+            'DistributedSuperLU\.cpp',
+            'DistributedSparseGenColLinSOE\.cpp',
+            'DistributedSparseGenRowLinSOE\.cpp'
+          )
+          foreach ($p in $patterns) {
+            $content = [regex]::Replace($content, "(?m)(^.*$p.*$)", '# DISABLED SuperLU_DIST: $1')
+          }
+
+          Set-Content $cmakeFile $content -NoNewline
+          Write-Host "Removed SuperLU_DIST distributed solvers from OpenSeesSP build."
+          Write-Host "OpenSeesSP will use MUMPS only (sufficient for nonlinear analysis)."
+
           
       # ============================================================
       # Configure OpenSees (Ninja + response files + MKL static + MUMPS + Tcl 8.6)
