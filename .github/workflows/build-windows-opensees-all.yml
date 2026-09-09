@@ -364,6 +364,26 @@ jobs:
 
           Write-Host "CRT patch done."
 
+      - name: Fix Domain vs PartitionedDomain link error in OpenSeesSP
+        shell: pwsh
+        run: |
+          $files = @(
+            "SRC\interpreter\myCommands.cpp",
+            "SRC\interpreter\Tcl_generateInterfacePoints.cpp"
+          )
+          foreach ($f in $files) {
+            if (-not (Test-Path $f)) { continue }
+            $content = Get-Content $f -Raw
+            # Replace extern Domain theDomain with extern PartitionedDomain theDomain
+            # but only when NOT already PartitionedDomain
+            $new = [regex]::Replace($content, '(?<!Partitioned)Domain\s+theDomain', 'PartitionedDomain theDomain')
+            if ($new -ne $content) {
+              Set-Content $f $new -NoNewline
+              Write-Host "Fixed Domain->PartitionedDomain in: $f"
+            }
+          }
+          Write-Host "Domain/PartitionedDomain fix done."
+
       # ============================================================
       # Patch DistributedSuperLU.cpp
       # Fix MSVC/Windows SDK conflict:
