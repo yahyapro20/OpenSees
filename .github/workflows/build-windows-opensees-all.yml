@@ -32,7 +32,7 @@ jobs:
           ref: master
           fetch-depth: 1
 
-      # ---------- vcpkg + deps (hdf5 با feature hl) ----------
+      # ---------- vcpkg + deps (بدون tcl؛ Tcl/Tk 8.6 از سورس ساخته می‌شود) ----------
       - name: Setup vcpkg and Install Dependencies
         shell: pwsh
         run: |
@@ -48,7 +48,7 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=$($vcpkgRoot -replace '\\','/')"
           & $vcpkgExe version
 
-          foreach ($pkg in @("zlib:x64-windows", "tcl:x64-windows", "eigen3:x64-windows", "hdf5[core,hl,szip,zlib]:x64-windows")) {
+          foreach ($pkg in @("zlib:x64-windows", "eigen3:x64-windows", "hdf5[core,hl,szip,zlib]:x64-windows")) {
             Write-Host ">>> Installing: $pkg"
             & $vcpkgExe install $pkg 2>&1 | ForEach-Object { Write-Host $_ }
             if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: vcpkg install $pkg failed"; exit 1 }
@@ -58,38 +58,45 @@ jobs:
           if (-not (Test-Path (Join-Path $inst "include\hdf5_hl.h"))) {
             Write-Host "ERROR: hdf5_hl.h still missing after install"; exit 1
           }
-          $tkLib  = Get-ChildItem -Path (Join-Path $inst "lib") -Filter "tk*.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
-          $tkHdr  = Get-ChildItem -Path (Join-Path $inst "include") -Recurse -Filter "tk.h" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($tkLib -and $tkHdr) {
-            $tclLib = Get-ChildItem -Path (Join-Path $inst "lib") -Filter "tcl*.lib" | Select-Object -First 1
-            $tclHdr = Get-ChildItem -Path (Join-Path $inst "include") -Recurse -Filter "tcl.h" | Select-Object -First 1
-            Add-Content -Path $env:GITHUB_ENV -Value "TCL_LIBRARY_HINT=$($tclLib.FullName -replace '\\','/')"
-            Add-Content -Path $env:GITHUB_ENV -Value "TK_LIBRARY_HINT=$($tkLib.FullName -replace '\\','/')"
-            Add-Content -Path $env:GITHUB_ENV -Value "TCLTK_INCLUDE_HINT=$($tclHdr.DirectoryName -replace '\\','/')"
-            Add-Content -Path $env:GITHUB_ENV -Value "TCLTK_BIN_DIR=$($inst -replace '\\','/')/bin"
-          } else {
-            Write-Host "Tk missing -> building Tcl/Tk from source (nmake/MSVC)..."
-            $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-            $vcvars = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find "VC\Auxiliary\Build\vcvars64.bat" | Select-Object -First 1
-            $tcltkDir = "C:\tcltk"
-            cmd /c "git clone --depth 1 --branch core-9-0-3 https://github.com/tcltk/tcl.git C:\srctcl 2>&1"
-            cmd /c "git clone --depth 1 --branch core-9-0-3 https://github.com/tcltk/tk.git C:\srctk 2>&1"
-            cmd /c "`"$vcvars`" && cd /d C:\srctcl\win && nmake -f makefile.vc RELEASE=1 OPTS=threads 2>&1"
-            if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: nmake tcl failed"; exit 1 }
-            cmd /c "`"$vcvars`" && cd /d C:\srctcl\win && nmake -f makefile.vc install INSTALLDIR=$tcltkDir 2>&1"
-            cmd /c "`"$vcvars`" && cd /d C:\srctk\win && nmake -f makefile.vc RELEASE=1 OPTS=threads TCLDIR=C:\srctcl 2>&1"
-            if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: nmake tk failed"; exit 1 }
-            cmd /c "`"$vcvars`" && cd /d C:\srctk\win && nmake -f makefile.vc install INSTALLDIR=$tcltkDir 2>&1"
-            $tclLib = Get-ChildItem "$tcltkDir\lib" -Filter "tcl90.lib" | Select-Object -First 1
-            if (-not $tclLib) { $tclLib = Get-ChildItem "$tcltkDir\lib" -Filter "tcl*.lib" | Where-Object { $_.Name -notmatch 'stub' } | Select-Object -First 1 }
-            $tkLib2 = Get-ChildItem "$tcltkDir\lib" -Filter "tcl9tk*.lib" | Select-Object -First 1
-            if (-not $tkLib2) { $tkLib2 = Get-ChildItem "$tcltkDir\lib" -Filter "tk*.lib" | Where-Object { $_.Name -notmatch 'stub' } | Select-Object -First 1 }
-            Add-Content -Path $env:GITHUB_ENV -Value "TCL_LIBRARY_HINT=$($tclLib.FullName -replace '\\','/')"
-            Add-Content -Path $env:GITHUB_ENV -Value "TK_LIBRARY_HINT=$($tkLib2.FullName -replace '\\','/')"
-            Add-Content -Path $env:GITHUB_ENV -Value "TCLTK_INCLUDE_HINT=$($tcltkDir -replace '\\','/')/include"
-            Add-Content -Path $env:GITHUB_ENV -Value "TCLTK_BIN_DIR=$($tcltkDir -replace '\\','/')/bin"
-          }
-          Write-Host "=== Dependencies step finished ==="
+          Write-Host "=== vcpkg dependencies done ==="
+
+      # ---------- Tcl/Tk 8.6 from source (OpenSees requires Tcl 8.5/8.6 API, NOT Tcl 9) ----------
+      - name: Build Tcl/Tk 8.6 from source (MSVC)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vcvars = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find "VC\Auxiliary\Build\vcvars64.bat" | Select-Object -First 1
+          if (-not $vcvars) { Write-Host "ERROR: vcvars64.bat not found"; exit 1 }
+          $tcltkDir = "C:\tcltk"
+
+          cmd /c "git clone --depth 1 --branch core-8-6-branch https://github.com/tcltk/tcl.git C:\srctcl 2>&1"
+          if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: clone tcl failed"; exit 1 }
+          cmd /c "git clone --depth 1 --branch core-8-6-branch https://github.com/tcltk/tk.git C:\srctk 2>&1"
+          if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: clone tk failed"; exit 1 }
+
+          cmd /c "`"$vcvars`" && cd /d C:\srctcl\win && nmake -f makefile.vc RELEASE=1 OPTS=threads 2>&1"
+          if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: nmake tcl failed"; exit 1 }
+          cmd /c "`"$vcvars`" && cd /d C:\srctcl\win && nmake -f makefile.vc install INSTALLDIR=$tcltkDir 2>&1"
+          if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: nmake install tcl failed"; exit 1 }
+
+          cmd /c "`"$vcvars`" && cd /d C:\srctk\win && nmake -f makefile.vc RELEASE=1 OPTS=threads TCLDIR=C:\srctcl 2>&1"
+          if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: nmake tk failed"; exit 1 }
+          cmd /c "`"$vcvars`" && cd /d C:\srctk\win && nmake -f makefile.vc install INSTALLDIR=$tcltkDir 2>&1"
+          if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: nmake install tk failed"; exit 1 }
+
+          $tclLib = Get-ChildItem "$tcltkDir\lib" -Filter "tcl86t.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $tclLib) { $tclLib = Get-ChildItem "$tcltkDir\lib" -Filter "tcl*.lib" | Where-Object { $_.Name -notmatch 'stub' } | Select-Object -First 1 }
+          $tkLib = Get-ChildItem "$tcltkDir\lib" -Filter "tk86t.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $tkLib) { $tkLib = Get-ChildItem "$tcltkDir\lib" -Filter "tk*.lib" | Where-Object { $_.Name -notmatch 'stub' } | Select-Object -First 1 }
+          if (-not $tclLib -or -not $tkLib) { Write-Host "ERROR: tcl86t.lib / tk86t.lib not found"; exit 1 }
+
+          Add-Content -Path $env:GITHUB_ENV -Value "TCL_LIBRARY_HINT=$($tclLib.FullName -replace '\\','/')"
+          Add-Content -Path $env:GITHUB_ENV -Value "TK_LIBRARY_HINT=$($tkLib.FullName -replace '\\','/')"
+          Add-Content -Path $env:GITHUB_ENV -Value "TCLTK_INCLUDE_HINT=$($tcltkDir -replace '\\','/')/include"
+          Add-Content -Path $env:GITHUB_ENV -Value "TCLTK_BIN_DIR=$($tcltkDir -replace '\\','/')/bin"
+          Write-Host "Tcl lib: $($tclLib.FullName)"
+          Write-Host "Tk lib : $($tkLib.FullName)"
 
       # ---------- oneAPI ----------
       - name: Download and Extract Intel oneAPI Toolkit
@@ -158,6 +165,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_INSTALL_PREFIX="$env:MUMPS_INSTALL" `
             -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_Fortran_COMPILER="$ifxPath" `
+            -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON `
             -DMUMPS_UPSTREAM_VERSION="5.5.1" `
             -DMUMPS_parallel=ON -DMUMPS_scalapack=ON -DMUMPS_openmp=ON `
             -DMUMPS_intsize64=OFF -DMUMPS_BUILD_TESTING=OFF `
@@ -172,26 +180,45 @@ jobs:
           if (-not (Test-Path "$mumps_libdir/dmumps.lib")) { Write-Host "ERROR: dmumps.lib missing"; exit 1 }
           Add-Content -Path $env:GITHUB_ENV -Value "MUMPS_LIBDIR=$mumps_libdir"
 
+      # ---------- Fix CRT: force /MD everywhere (prevents LNK2038 mismatch) ----------
+      - name: Force dynamic CRT (/MD) in OpenSees CMake files
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Path . -Recurse -Include CMakeLists.txt,*.cmake -File
+          foreach ($f in $files) {
+            $orig = Get-Content $f.FullName -Raw
+            $new = $orig
+            $new = [regex]::Replace($new, '/MTd\b', '/MDd')
+            $new = [regex]::Replace($new, '/MT\b', '/MD')
+            $pat = [regex]::Escape('MultiThreaded$<$<CONFIG:Debug>:Debug>') + '(?!DLL)'
+            $new = [regex]::Replace($new, $pat, 'MultiThreaded$$<$$<CONFIG:Debug>:Debug>DLL')
+            $new = $new.Replace('"MultiThreaded"', '"MultiThreadedDLL"')
+            $new = $new.Replace('"MultiThreadedDebug"', '"MultiThreadedDebugDLL"')
+            if ($new -ne $orig) {
+              Set-Content -Path $f.FullName -Value $new -NoNewline
+              Write-Host "Patched CRT in: $($f.FullName)"
+            }
+          }
+          Write-Host "CRT patch done"
+
       # ============================================================
-      # 7. Configure OpenSees (Ninja + response files + MKL static + MUMPS)
+      # Configure OpenSees (Ninja + response files + MKL static + MUMPS + Tcl 8.6)
       # ============================================================
       - name: Configure OpenSees
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
 
-          # --- 7.0 Clean build directory to avoid stale ninja files ---
-          if (Test-Path $env:OPENSEES_BUILD) {
-            Remove-Item -Recurse -Force $env:OPENSEES_BUILD
-          }
+          # --- clean build directory (avoid stale ninja files) ---
+          if (Test-Path $env:OPENSEES_BUILD) { Remove-Item -Recurse -Force $env:OPENSEES_BUILD }
           New-Item -ItemType Directory -Path $env:OPENSEES_BUILD | Out-Null
 
-          # --- 7.1 resolve the vcpkg root that ACTUALLY has the packages ---
+          # --- resolve vcpkg root (probe by hdf5.h, since tcl now comes from C:\tcltk) ---
           $cands = @($env:VCPKG_ROOT, $env:VCPKG_INSTALLATION_ROOT, "C:/vcpkg")
           $toolchain = $null
           $vcpkgRootUsed = $null
           foreach ($c in $cands) {
-            if ($c -and (Test-Path "$c/installed/x64-windows/include/tcl.h")) {
+            if ($c -and (Test-Path "$c/installed/x64-windows/include/hdf5.h")) {
               $toolchain = "$c/scripts/buildsystems/vcpkg.cmake"
               $vcpkgRootUsed = $c
               break
@@ -200,22 +227,16 @@ jobs:
           if (-not $toolchain) { Write-Host "ERROR: no vcpkg root with installed packages found!"; exit 1 }
           Write-Host "FORCING toolchain: $toolchain (root: $vcpkgRootUsed)"
 
-          # --- 7.2 self-heal HDF5 HL (hdf5_hl.h / hdf5_hl.lib) ---
           $vcpkgInc = "$vcpkgRootUsed/installed/x64-windows/include"
           $vcpkgLib = "$vcpkgRootUsed/installed/x64-windows/lib"
-          if (-not (Test-Path "$vcpkgInc/hdf5_hl.h")) {
-            Write-Host "hdf5_hl.h missing -> installing hdf5[hl] feature..."
-            & "$vcpkgRootUsed\vcpkg.exe" install "hdf5[hl]:x64-windows" 2>&1 | ForEach-Object { Write-Host $_ }
-            if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: vcpkg install hdf5[hl] failed"; exit 1 }
-          }
-          if (-not (Test-Path "$vcpkgInc/hdf5_hl.h")) { Write-Host "ERROR: hdf5_hl.h still missing"; exit 1 }
+          if (-not (Test-Path "$vcpkgInc/hdf5_hl.h")) { Write-Host "ERROR: hdf5_hl.h missing"; exit 1 }
           $hdf5hl = "$vcpkgLib/hdf5_hl.lib"
           if (-not (Test-Path $hdf5hl)) {
             $hdf5hl = (Get-ChildItem $vcpkgLib -Filter "hdf5_hl*.lib" | Select-Object -First 1).FullName
           }
           Write-Host "HDF5 HL lib: $hdf5hl"
 
-          # --- 7.3 ifx full path ---
+          # --- ifx full path ---
           $ifxPath = (Get-Command ifx -ErrorAction SilentlyContinue).Source
           if (-not $ifxPath) {
             $ifxPath = Get-ChildItem -Path "C:\Program Files (x86)\Intel\oneAPI" -Recurse -Filter "ifx.exe" -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
@@ -224,34 +245,36 @@ jobs:
           $ifxPath = $ifxPath -replace '\\','/'
           Write-Host "Fortran compiler: $ifxPath"
 
-          # --- 7.4 per-matrix flags (Release vs Profile) ---
+          # --- per-matrix flags (/EHsc /GR /bigobj are MANDATORY on MSVC) ---
           $cfg = $env:CFG
           if (-not $cfg) {
             if ($env:BUILD_TYPE -eq "Profile") { $cfg = "RelWithDebInfo" } else { $cfg = "Release" }
           }
           if ($cfg -eq "Release") {
-            $c_flags   = "/MD /O2 /Ob2 /arch:AVX2 /DNDEBUG"
-            $cxx_flags = "/MD /O2 /Ob2 /arch:AVX2 /DNDEBUG"
+            $c_flags   = "/MD /O2 /Ob2 /arch:AVX2 /DNDEBUG /DWIN32 /D_WINDOWS /W3 /bigobj"
+            $cxx_flags = "/MD /O2 /Ob2 /arch:AVX2 /DNDEBUG /DWIN32 /D_WINDOWS /W3 /GR /EHsc /bigobj"
             $f_flags   = "/MD /O2 /arch:AVX2"
           } else {
-            $c_flags   = "/MD /Zi /O2 /Ob1 /Oy- /arch:AVX2 /DNDEBUG"
-            $cxx_flags = "/MD /Zi /O2 /Ob1 /Oy- /arch:AVX2 /DNDEBUG"
+            $c_flags   = "/MD /Zi /O2 /Ob1 /Oy- /arch:AVX2 /DNDEBUG /DWIN32 /D_WINDOWS /W3 /bigobj"
+            $cxx_flags = "/MD /Zi /O2 /Ob1 /Oy- /arch:AVX2 /DNDEBUG /DWIN32 /D_WINDOWS /W3 /GR /EHsc /bigobj"
             $f_flags   = "/MD /Zi /O2 /arch:AVX2"
           }
           $c_flags   += " /I`"$vcpkgInc`""
           $cxx_flags += " /I`"$vcpkgInc`""
           Write-Host "Config: $cfg"
 
-          # --- 7.5 Tcl/Tk hints ---
+          # --- Tcl/Tk 8.6 hints ---
           $tcltkArgs = @()
           if ($env:TCL_LIBRARY_HINT) {
             $tcltkArgs += "-DTCL_LIBRARY=$env:TCL_LIBRARY_HINT"
             $tcltkArgs += "-DTK_LIBRARY=$env:TK_LIBRARY_HINT"
             $tcltkArgs += "-DTCL_INCLUDE_PATH=$env:TCLTK_INCLUDE_HINT"
             $tcltkArgs += "-DTK_INCLUDE_PATH=$env:TCLTK_INCLUDE_HINT"
+          } else {
+            Write-Host "ERROR: TCL_LIBRARY_HINT not set"; exit 1
           }
 
-          # --- 7.6 configure (CRITICAL FIX for "command line is too long") ---
+          # --- configure (response files fix "command line is too long") ---
           cmake -S . -B $env:OPENSEES_BUILD -G Ninja `
             -DCMAKE_BUILD_TYPE="$cfg" `
             -DCMAKE_CXX_SCAN_FOR_MODULES=OFF `
@@ -259,6 +282,8 @@ jobs:
             -DCMAKE_Fortran_USE_RESPONSE_FILE_FOR_INCLUDES=ON `
             -DCMAKE_C_USE_RESPONSE_FILE_FOR_INCLUDES=ON `
             -DCMAKE_CXX_USE_RESPONSE_FILE_FOR_INCLUDES=ON `
+            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreadedDLL" `
             -DCMAKE_TOOLCHAIN_FILE="$toolchain" `
             -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_Fortran_COMPILER="$ifxPath" `
             -DCMAKE_C_FLAGS="$c_flags" `
@@ -273,7 +298,7 @@ jobs:
             @tcltkArgs
           if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: CMake configure failed"; exit 1 }
 
-          # --- 7.7 post-configure verification ---
+          # --- post-configure verification ---
           $cachePath = "$env:OPENSEES_BUILD\CMakeCache.txt"
           $cache = Get-Content $cachePath -Raw
           $bt = (Select-String -Path $cachePath -Pattern '^CMAKE_BUILD_TYPE:').Line
@@ -282,7 +307,8 @@ jobs:
           if ($cache -notmatch "mkl_scalapack_lp64\.lib") { Write-Host "ERROR: ScaLAPACK lp64 missing in cache"; exit 1 }
           if ($cache -notmatch "mkl_blacs_intelmpi_lp64\.lib") { Write-Host "ERROR: BLACS lp64 missing in cache"; exit 1 }
           if ($cache -match "mkl_scalapack_ilp64|mkl_blacs_intelmpi_ilp64") { Write-Host "ERROR: ilp64 leaked into cache"; exit 1 }
-          Write-Host "Configure verified: CFG=$cfg | MKL lp64 + ScaLAPACK + BLACS OK"
+          if ($cache -notmatch "tcl86t\.lib") { Write-Host "ERROR: tcl86t.lib not selected (wrong Tcl?)"; exit 1 }
+          Write-Host "Configure verified: CFG=$cfg | Tcl 8.6 | MKL lp64 + ScaLAPACK + BLACS OK"
 
       - name: HARD GATE verify cache
         shell: pwsh
@@ -291,6 +317,7 @@ jobs:
           if ($cache -notmatch "mkl_scalapack_lp64\.lib") { Write-Host "ERROR: ScaLAPACK missing"; exit 1 }
           if ($cache -notmatch "mkl_blacs_intelmpi_lp64\.lib") { Write-Host "ERROR: BLACS missing"; exit 1 }
           if ($cache -match "openblas|reference_blas") { Write-Host "ERROR: BLAS fallback"; exit 1 }
+          if ($cache -match "tcl9|tk9") { Write-Host "ERROR: Tcl 9 leaked into build!"; exit 1 }
           Write-Host "HARD GATE PASSED"
 
       - name: Build OpenSees
@@ -304,6 +331,16 @@ jobs:
         run: |
           cmake --build $env:OPENSEES_BUILD --target OpenSeesSP --parallel 2>&1 | Tee-Object -FilePath "$env:GITHUB_WORKSPACE\build_openseessp.log"
           if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      # ---------- Stage runtime DLLs next to executables (needed for smoke tests) ----------
+      - name: Stage runtime DLLs
+        shell: pwsh
+        run: |
+          if ($env:TCLTK_BIN_DIR) { Copy-Item "$env:TCLTK_BIN_DIR\*.dll" $env:OPENSEES_BUILD\ -ErrorAction SilentlyContinue }
+          if ($env:VCPKG_ROOT) { Copy-Item "$env:VCPKG_ROOT\installed\x64-windows\bin\*.dll" $env:OPENSEES_BUILD\ -ErrorAction SilentlyContinue }
+          foreach ($dll in @("libiomp5md.dll","libifcoremd.dll","libifportmd.dll","libmmd.dll","svml_dispmd.dll")) {
+            Get-ChildItem "C:\Program Files (x86)\Intel\oneAPI" -Recurse -Filter $dll -ErrorAction SilentlyContinue | Select-Object -First 1 | Copy-Item -Destination $env:OPENSEES_BUILD\ -ErrorAction SilentlyContinue
+          }
 
       - name: Verify link libs
         shell: pwsh
@@ -335,7 +372,7 @@ jobs:
           $pi.RedirectStandardOutput = $true; $pi.RedirectStandardError = $true
           $pi.UseShellExecute = $false; $pi.CreateNoWindow = $true
           $p = New-Object System.Diagnostics.Process; $p.StartInfo = $pi; $p.Start() | Out-Null
-          $ok = $p.WaitForExit(30000); $so = $p.StandardOutput.ReadToEnd()
+          $ok = $p.WaitForExit(60000); $so = $p.StandardOutput.ReadToEnd()
           if (-not $ok) { $p.Kill() }
           if ($so -notmatch "OpenSeesSP is working") { exit 1 }
 
@@ -363,11 +400,28 @@ jobs:
         if: failure()
         shell: pwsh
         run: |
-          $sum = "# Build Failed - Key Errors`n`n"
+          $sum = "# Build Failed - Exact Errors`n`n"
           foreach ($log in @("$env:GITHUB_WORKSPACE\build_opensees.log", "$env:GITHUB_WORKSPACE\build_openseessp.log")) {
             if (Test-Path $log) {
-              $hits = Get-Content $log | Select-String -Pattern 'FAILED:|fatal error|error C|error LNK|too long' | Select-Object -First 25
-              if ($hits) { $sum += "## $([System.IO.Path]::GetFileName($log))`n" + (($hits | ForEach-Object { $_.Line }) -join "`n") + "`n`n" }
+              $lines = Get-Content $log
+              $failedIdx = $lines | Select-String -Pattern '^FAILED:' | ForEach-Object { $_.LineNumber }
+              foreach ($i in ($failedIdx | Select-Object -First 3)) {
+                $start = [Math]::Max(0, $i - 3)
+                $end = [Math]::Min($lines.Count - 1, $i + 45)
+                $sum += "## FAILED block (line $i) in $([IO.Path]::GetFileName($log))`n```````n" + (($lines[$start..$end]) -join "`n") + "`n``````n`n"
+              }
+              $hits = $lines | Select-String -Pattern 'fatal error|error C\d|error LNK|The command line is too long' | Select-Object -First 20
+              if ($hits) { $sum += "## Error lines`n```````n" + (($hits | ForEach-Object Line) -join "`n") + "`n``````n" }
             }
           }
           $sum | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          Write-Host $sum
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ matrix.build_type }}
+          path: |
+            build_opensees.log
+            build_openseessp.log
