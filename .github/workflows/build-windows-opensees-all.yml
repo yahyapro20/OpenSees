@@ -187,6 +187,10 @@ jobs:
           $files = Get-ChildItem -Path . -Recurse -Include CMakeLists.txt,*.cmake -File
           foreach ($f in $files) {
             $orig = Get-Content $f.FullName -Raw
+            if ([string]::IsNullOrEmpty($orig)) {
+              Write-Host "Skipping empty file: $($f.FullName)"
+              continue
+            }
             $new = $orig
             $new = [regex]::Replace($new, '/MTd\b', '/MDd')
             $new = [regex]::Replace($new, '/MT\b', '/MD')
