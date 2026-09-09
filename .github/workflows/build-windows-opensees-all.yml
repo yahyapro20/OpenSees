@@ -366,4 +366,99 @@ jobs:
       - name: Build OpenSeesSP
         shell: pwsh
         run: |
-          cmake --build $env:OPENSEES_BUILD --target Open
+          cmake --build $env:OPENSEES_BUILD --target OpenSeesSP --parallel 2>&1 | Tee-Object -FilePath "$env:GITHUB_WORKSPACE\build_openseessp.log"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      # ---------- Stage runtime DLLs next to executables (needed for smoke tests) ----------
+      - name: Stage runtime DLLs
+        shell: pwsh
+        run: |
+          if ($env:TCLTK_BIN_DIR) { Copy-Item "$env:TCLTK_BIN_DIR\*.dll" $env:OPENSEES_BUILD\ -ErrorAction SilentlyContinue }
+          if ($env:VCPKG_ROOT) { Copy-Item "$env:VCPKG_ROOT\installed\x64-windows\bin\*.dll" $env:OPENSEES_BUILD\ -ErrorAction SilentlyContinue }
+          foreach ($dll in @("libiomp5md.dll","libifcoremd.dll","libifportmd.dll","libmmd.dll","svml_dispmd.dll")) {
+            Get-ChildItem "C:\Program Files (x86)\Intel\oneAPI" -Recurse -Filter $dll -ErrorAction SilentlyContinue | Select-Object -First 1 | Copy-Item -Destination $env:OPENSEES_BUILD\ -ErrorAction SilentlyContinue
+          }
+
+      - name: Verify link libs
+        shell: pwsh
+        run: |
+          $all = (Get-Content "$env:OPENSEES_BUILD\build.ninja" -Raw -ErrorAction SilentlyContinue)
+          $all += (Get-ChildItem $env:OPENSEES_BUILD -Recurse -Filter "*.rsp" -ErrorAction SilentlyContinue | ForEach-Object { Get-Content $_.FullName -Raw }) -join "`n"
+          if ($all -notmatch "mkl_scalapack_lp64\.lib") { Write-Host "ERROR: ScaLAPACK not in link"; exit 1 }
+          if ($all -notmatch "mkl_blacs_intelmpi_lp64\.lib") { Write-Host "ERROR: BLACS not in link"; exit 1 }
+
+      - name: Verify MKL signature
+        shell: pwsh
+        run: |
+          findstr /C:"Math Kernel Library" "$env:OPENSEES_BUILD\OpenSeesSP.exe" > "$env:TEMP\mkl.txt" 2>&1
+          if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: MKL signature missing"; exit 1 }
+
+      - name: Smoke test OpenSees
+        shell: pwsh
+        run: |
+          $out = ("puts {OpenSees is working}; exit" | & "$env:OPENSEES_BUILD\OpenSees.exe" | Out-String)
+          if ($out -notmatch "OpenSees is working") { exit 1 }
+
+      - name: Smoke test OpenSeesSP (MPI+MUMPS)
+        shell: pwsh
+        run: |
+          cd $env:OPENSEES_BUILD
+          "system Mumps; puts {OpenSeesSP is working}; exit" | Out-File -Encoding ascii t.tcl
+          $pi = New-Object System.Diagnostics.ProcessStartInfo
+          $pi.FileName = "mpiexec"; $pi.Arguments = "-n 2 .\OpenSeesSP.exe t.tcl"
+          $pi.RedirectStandardOutput = $true; $pi.RedirectStandardError = $true
+          $pi.UseShellExecute = $false; $pi.CreateNoWindow = $true
+          $p = New-Object System.Diagnostics.Process; $p.StartInfo = $pi; $p.Start() | Out-Null
+          $ok = $p.WaitForExit(60000); $so = $p.StandardOutput.ReadToEnd()
+          if (-not $ok) { $p.Kill() }
+          if ($so -notmatch "OpenSeesSP is working") { exit 1 }
+
+      - name: Package artifacts
+        shell: pwsh
+        run: |
+          $d = "artifact_${{ matrix.build_type }}"
+          New-Item -ItemType Directory -Path $d | Out-Null
+          Copy-Item "$env:OPENSEES_BUILD\OpenSees.exe" $d\
+          Copy-Item "$env:OPENSEES_BUILD\OpenSeesSP.exe" $d\
+          if ($env:VCPKG_ROOT) { Copy-Item "$env:VCPKG_ROOT\installed\x64-windows\bin\*.dll" $d\ -ErrorAction SilentlyContinue }
+          if ($env:TCLTK_BIN_DIR) { Copy-Item "$env:TCLTK_BIN_DIR\*.dll" $d\ -ErrorAction SilentlyContinue }
+          foreach ($dll in @("libiomp5md.dll","libifcoremd.dll","libifportmd.dll","libmmd.dll","svml_dispmd.dll","impi.dll","impicxx.dll")) {
+            Get-ChildItem "C:\Program Files (x86)\Intel\oneAPI" -Recurse -Filter $dll -ErrorAction SilentlyContinue | Select-Object -First 1 | Copy-Item -Destination $d\ -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenSees-Windows-${{ matrix.build_type }}-AVX2
+          path: artifact_${{ matrix.build_type }}/
+          if-no-files-found: error
+
+      - name: Error Summary
+        if: failure()
+        shell: pwsh
+        run: |
+          $sum = "# Build Failed - Exact Errors`n`n"
+          foreach ($log in @("$env:GITHUB_WORKSPACE\build_opensees.log", "$env:GITHUB_WORKSPACE\build_openseessp.log")) {
+            if (Test-Path $log) {
+              $lines = Get-Content $log
+              $failedIdx = $lines | Select-String -Pattern '^FAILED:' | ForEach-Object { $_.LineNumber }
+              foreach ($i in ($failedIdx | Select-Object -First 3)) {
+                $start = [Math]::Max(0, $i - 3)
+                $end = [Math]::Min($lines.Count - 1, $i + 45)
+                $sum += "## FAILED block (line $i) in $([IO.Path]::GetFileName($log))`n```````n" + (($lines[$start..$end]) -join "`n") + "`n``````n`n"
+              }
+              $hits = $lines | Select-String -Pattern 'fatal error|error C\d|error LNK|The command line is too long' | Select-Object -First 20
+              if ($hits) { $sum += "## Error lines`n```````n" + (($hits | ForEach-Object Line) -join "`n") + "`n``````n" }
+            }
+          }
+          $sum | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          Write-Host $sum
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ matrix.build_type }}
+          path: |
+            build_opensees.log
+            build_openseessp.log
