@@ -110,7 +110,7 @@ jobs:
       # ============================================================
       # Build Tcl/Tk 8.6
       # ============================================================
-          - name: Build Tcl/Tk 8.6 from source
+      - name: Build Tcl/Tk 8.6 from source
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
