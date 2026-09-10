@@ -110,7 +110,7 @@ jobs:
       # ============================================================
       # Build Tcl/Tk 8.6
       # ============================================================
-      - name: Build Tcl/Tk 8.6 from source
+          - name: Build Tcl/Tk 8.6 from source
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
@@ -142,81 +142,52 @@ jobs:
             Remove-Item -Recurse -Force $tcltkDir
           }
 
-          cmd /c `
-            "git clone --depth 1 --branch core-8-6-branch https://github.com/tcltk/tcl.git C:\srctcl 2>&1"
+          cmd /c "git clone --depth 1 --branch core-8-6-branch https://github.com/tcltk/tcl.git C:\srctcl 2>&1"
 
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "ERROR: Tcl clone failed"
+            Write-Host "ERROR: clone Tcl failed"
             exit 1
           }
 
-          cmd /c `
-            "git clone --depth 1 --branch core-8-6-branch https://github.com/tcltk/tk.git C:\srctk 2>&1"
+          cmd /c "git clone --depth 1 --branch core-8-6-branch https://github.com/tcltk/tk.git C:\srctk 2>&1"
 
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "ERROR: Tk clone failed"
+            Write-Host "ERROR: clone Tk failed"
             exit 1
           }
 
-          cmd /c `
-            "call `"$vcvars`" && cd /d C:\srctcl\win && nmake -f makefile.vc release OPTS=static 2>&1"
+          # Tcl 8.6
+          cmd /c "`"$vcvars`" && cd /d C:\srctcl\win && nmake -f makefile.vc RELEASE=1 OPTS=threads 2>&1"
 
           if ($LASTEXITCODE -ne 0) {
             Write-Host "ERROR: Tcl build failed"
             exit 1
           }
 
-          cmd /c `
-            "call `"$vcvars`" && cd /d C:\srctk\win && nmake -f makefile.vc release OPTS=static 2>&1"
+          # Tcl install
+          cmd /c "`"$vcvars`" && cd /d C:\srctcl\win && nmake -f makefile.vc install INSTALLDIR=$tcltkDir 2>&1"
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: Tcl install failed"
+            exit 1
+          }
+
+          # Tk 8.6
+          cmd /c "`"$vcvars`" && cd /d C:\srctk\win && nmake -f makefile.vc RELEASE=1 OPTS=threads TCLDIR=C:\srctcl 2>&1"
 
           if ($LASTEXITCODE -ne 0) {
             Write-Host "ERROR: Tk build failed"
             exit 1
           }
 
-          New-Item -ItemType Directory -Force -Path $tcltkDir | Out-Null
-          New-Item -ItemType Directory -Force -Path "$tcltkDir\bin" | Out-Null
-          New-Item -ItemType Directory -Force -Path "$tcltkDir\include" | Out-Null
-          New-Item -ItemType Directory -Force -Path "$tcltkDir\lib" | Out-Null
+          # Tk install
+          cmd /c "`"$vcvars`" && cd /d C:\srctk\win && nmake -f makefile.vc install INSTALLDIR=$tcltkDir 2>&1"
 
-          Copy-Item C:\srctcl\win\Release\*.dll "$tcltkDir\bin\" -Force
-          Copy-Item C:\srctk\win\Release\*.dll "$tcltkDir\bin\" -Force
-
-          Copy-Item C:\srctcl\generic\*.h "$tcltkDir\include\" -Force
-          Copy-Item C:\srctk\generic\*.h "$tcltkDir\include\" -Force
-
-          Copy-Item C:\srctcl\win\Release\*.lib "$tcltkDir\lib\" -Force
-          Copy-Item C:\srctk\win\Release\*.lib "$tcltkDir\lib\" -Force
-
-          $tclLib = Get-ChildItem "$tcltkDir\lib" -Filter "tcl*.lib" |
-            Select-Object -First 1
-
-          $tkLib = Get-ChildItem "$tcltkDir\lib" -Filter "tk*.lib" |
-            Select-Object -First 1
-
-          if (-not $tclLib) {
-            Write-Host "ERROR: Tcl library not found"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: Tk install failed"
             exit 1
           }
-
-          if (-not $tkLib) {
-            Write-Host "ERROR: Tk library not found"
-            exit 1
-          }
-
-          Add-Content $env:GITHUB_ENV `
-            "TCLTK_INCLUDE_HINT=$($tcltkDir -replace '\\','/')/include"
-
-          Add-Content $env:GITHUB_ENV `
-            "TCL_LIBRARY_HINT=$($tclLib.FullName -replace '\\','/')"
-
-          Add-Content $env:GITHUB_ENV `
-            "TK_LIBRARY_HINT=$($tkLib.FullName -replace '\\','/')"
-
-          Add-Content $env:GITHUB_ENV `
-            "TCLTK_BIN_DIR=$($tcltkDir -replace '\\','/')/bin"
-
-          Write-Host "Tcl/Tk 8.6 built successfully."
+ 
 
 
       # ============================================================
