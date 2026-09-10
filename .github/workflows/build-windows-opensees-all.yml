@@ -369,20 +369,38 @@ jobs:
         run: |
           $files = @(
             "SRC\interpreter\myCommands.cpp",
-            "SRC\interpreter\Tcl_generateInterfacePoints.cpp"
+            "SRC\interpreter\Tcl_generateInterfacePoints.cpp",
+            "SRC\tcl\myCommands.cpp",
+            "SRC\tcl\Tcl_generateInterfacePoints.cpp"
           )
+          $fixed = 0
           foreach ($f in $files) {
             if (-not (Test-Path $f)) { continue }
             $content = Get-Content $f -Raw
-            # Replace extern Domain theDomain with extern PartitionedDomain theDomain
-            # but only when NOT already PartitionedDomain
-            $new = [regex]::Replace($content, '(?<!Partitioned)Domain\s+theDomain', 'PartitionedDomain theDomain')
+            # Match: extern Domain theDomain  OR  Domain theDomain
+            # But NOT: PartitionedDomain theDomain (already correct)
+            $new = [regex]::Replace($content, '(?<!Partitioned)(?<!Shadow)(?<!Actor)\bDomain\s+theDomain\b', 'PartitionedDomain theDomain')
             if ($new -ne $content) {
               Set-Content $f $new -NoNewline
-              Write-Host "Fixed Domain->PartitionedDomain in: $f"
+              Write-Host "FIXED Domain->PartitionedDomain in: $f"
+              $fixed++
+            } else {
+              Write-Host "No change needed: $f"
             }
           }
-          Write-Host "Domain/PartitionedDomain fix done."
+          if ($fixed -eq 0) {
+            Write-Host "WARNING: No files were patched. Searching all .cpp files..."
+            Get-ChildItem -Path SRC -Recurse -Filter *.cpp -File | ForEach-Object {
+              $c = Get-Content $_.FullName -Raw
+              $n = [regex]::Replace($c, '(?<!Partitioned)(?<!Shadow)(?<!Actor)\bDomain\s+theDomain\b', 'PartitionedDomain theDomain')
+              if ($n -ne $c) {
+                Set-Content $_.FullName $n -NoNewline
+                Write-Host "FIXED: $($_.FullName)"
+                $fixed++
+              }
+            }
+          }
+          Write-Host "Total files fixed: $fixed"
 
       # ============================================================
       # Patch DistributedSuperLU.cpp
