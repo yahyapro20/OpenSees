@@ -72,33 +72,35 @@ jobs:
       # ---------- RELEASE (optimized) ----------
 
       # ---------- RELEASE (optimized) ----------
-      - name: Configure + Build OpenSees Release
-        shell: cmd
-        run: |
-          set CMAKE_POLICY_VERSION_MINIMUM=3.5
-          conan install . -s arch=x86_64 -s compiler.runtime=static --build=missing -c tools.cmake.cmaketoolchain:generator=Ninja
-          call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 mod
-          cmake.exe -S . -B build/Release -G "Ninja" ^
-            -DCMAKE_TOOLCHAIN_FILE=build/Release/generators/conan_toolchain.cmake ^
-            -DCMAKE_BUILD_TYPE=Release ^
-            -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" ^
-            -DCMAKE_Fortran_COMPILER="ifx" ^
-            -DBLA_STATIC=ON -DMKL_LINK=static -DMKL_INTERFACE_FULL=intel_lp64 ^
-            -DMUMPS_DIR="..\..\mumps\build" ^
-            -DCMAKE_EXE_LINKER_FLAGS="/FORCE:MULTIPLE" ^
-            -DCMAKE_SHARED_LINKER_FLAGS="/FORCE:MULTIPLE" ^
-            -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
-          cd build/Release
-          cmake --build . --config Release --target OpenSees --parallel %NUMBER_OF_PROCESSORS%
+     # - name: Configure + Build OpenSees Release
+      #  shell: cmd
+      #  run: |
+       #   set CMAKE_POLICY_VERSION_MINIMUM=3.5
+       #   conan install . -s arch=x86_64 -s compiler.runtime=static --build=missing -c tools.cmake.cmaketoolchain:generator=Ninja
+       #   call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 mod
+         # cmake.exe -S . -B build/Release -G "Ninja" ^
+         #   -DCMAKE_TOOLCHAIN_FILE=build/Release/generators/conan_toolchain.cmake ^
+        #    -DCMAKE_BUILD_TYPE=Release ^
+       #     -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" ^
+      #      -DCMAKE_Fortran_COMPILER="ifx" ^
+       #     -DBLA_STATIC=ON -DMKL_LINK=static -DMKL_INTERFACE_FULL=intel_lp64 ^
+       #     -DMUMPS_DIR="..\..\mumps\build" ^
+          #  -DCMAKE_EXE_LINKER_FLAGS="/FORCE:MULTIPLE" ^
+         #   -DCMAKE_SHARED_LINKER_FLAGS="/FORCE:MULTIPLE" ^
+        #    -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
+        #  cd build/Release
+       #   cmake --build . --config Release --target OpenSees --parallel %NUMBER_OF_PROCESSORS%
           
+      # ---------- PROFILING (line-accurate) ----------
       # ---------- PROFILING (line-accurate) ----------
       - name: Configure + Build OpenSees Profiling
         shell: cmd
         run: |
           set CMAKE_POLICY_VERSION_MINIMUM=3.5
+          conan install . -s arch=x86_64 -s compiler.runtime=static --build=missing -c tools.cmake.cmaketoolchain:generator=Ninja -of build/Profiling
           call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 mod
           cmake.exe -S . -B build/Profiling -G "Ninja" ^
-            -DCMAKE_TOOLCHAIN_FILE=build/Release/generators/conan_toolchain.cmake ^
+            -DCMAKE_TOOLCHAIN_FILE=build/Profiling/generators/conan_toolchain.cmake ^
             -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
             -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" ^
             -DCMAKE_Fortran_COMPILER="ifx" ^
@@ -109,7 +111,7 @@ jobs:
             -DCMAKE_SHARED_LINKER_FLAGS="/DEBUG /FORCE:MULTIPLE" ^
             -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
           cd build/Profiling
-          cmake --build . --config RelWithDebInfo --target OpenSees --parallel %NUMBER_OF_PROCESSORS%
+          cmake --build . --config RelWithDebInfo --target OpenSees --parallel %NUMBER_OF_PROCESSORS%%
       
       - name: Prepare artifacts
         shell: pwsh
