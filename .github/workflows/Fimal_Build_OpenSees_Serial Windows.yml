@@ -108,88 +108,121 @@ jobs:
 
 
       # ============================================================
-      # Build Tcl/Tk 8.6
+      # Build and install Tcl/Tk 8.6
       # ============================================================
-      - name: Build Tcl/Tk 8.6 from source
-        shell: pwsh
+      - name: Build and install Tcl/Tk 8.6
+        shell: powershell
         run: |
-          $ErrorActionPreference = "Continue"
-
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-
-          $vcvars = & $vswhere `
-            -latest `
-            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-            -find "VC\Auxiliary\Build\vcvars64.bat" |
-            Select-Object -First 1
-
-          if (-not $vcvars) {
-            Write-Host "ERROR: vcvars64.bat not found"
-            exit 1
-          }
-
           $tcltkDir = "C:\tcltk"
-
-          if (Test-Path C:\srctcl) {
-            Remove-Item -Recurse -Force C:\srctcl
-          }
-
-          if (Test-Path C:\srctk) {
-            Remove-Item -Recurse -Force C:\srctk
-          }
 
           if (Test-Path $tcltkDir) {
             Remove-Item -Recurse -Force $tcltkDir
           }
 
-          cmd /c "git clone --depth 1 --branch core-8-6-branch https://github.com/tcltk/tcl.git C:\srctcl 2>&1"
+          New-Item -ItemType Directory -Force -Path $tcltkDir | Out-Null
 
+          # Clone Tcl/Tk 8.6
+          cmd /c "git clone --depth 1 --branch core-8-6-branch https://github.com/tcltk/tcl.git C:\srctcl 2>&1"
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "ERROR: clone Tcl failed"
             exit 1
           }
 
           cmd /c "git clone --depth 1 --branch core-8-6-branch https://github.com/tcltk/tk.git C:\srctk 2>&1"
-
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "ERROR: clone Tk failed"
             exit 1
           }
 
-          # Tcl 8.6
+          # Build Tcl
           cmd /c "`"$vcvars`" && cd /d C:\srctcl\win && nmake -f makefile.vc RELEASE=1 OPTS=threads 2>&1"
-
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "ERROR: Tcl build failed"
             exit 1
           }
 
-          # Tcl install
+          # Install Tcl
           cmd /c "`"$vcvars`" && cd /d C:\srctcl\win && nmake -f makefile.vc install INSTALLDIR=$tcltkDir 2>&1"
-
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "ERROR: Tcl install failed"
             exit 1
           }
 
-          # Tk 8.6
+          # Build Tk
           cmd /c "`"$vcvars`" && cd /d C:\srctk\win && nmake -f makefile.vc RELEASE=1 OPTS=threads TCLDIR=C:\srctcl 2>&1"
-
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "ERROR: Tk build failed"
             exit 1
           }
 
-          # Tk install
+          # Install Tk
           cmd /c "`"$vcvars`" && cd /d C:\srctk\win && nmake -f makefile.vc install INSTALLDIR=$tcltkDir 2>&1"
-
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "ERROR: Tk install failed"
             exit 1
           }
- 
 
+          # ========================================================
+          # Locate the actual Tcl/Tk libraries
+          # ========================================================
 
+          $tclLib = Get-ChildItem "$tcltkDir\lib" `
+            -Filter "tcl86t.lib" `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          $tkLib = Get-ChildItem "$tcltkDir\lib" `
+            -Filter "tk86t.lib" `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          # Fallback: find any non-stub Tcl library
+          if (-not $tclLib) {
+            $tclLib = Get-ChildItem "$tcltkDir\lib" `
+              -Filter "tcl*.lib" `
+              -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -notmatch 'stub' } |
+              Select-Object -First 1
+          }
+
+          # Fallback: find any non-stub Tk library
+          if (-not $tkLib) {
+            $tkLib = Get-ChildItem "$tcltkDir\lib" `
+              -Filter "tk*.lib" `
+              -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -notmatch 'stub' } |
+              Select-Object -First 1
+          }
+
+          # Fail immediately if libraries were not installed
+          if (-not $tclLib -or -not $tkLib) {
+            Write-Host "ERROR: Tcl/Tk libraries not found"
+            Write-Host "Contents of $tcltkDir\lib:"
+            Get-ChildItem "$tcltkDir\lib" -ErrorAction SilentlyContinue
+            exit 1
+          }
+
+          # ========================================================
+          # Export Tcl/Tk paths for the next GitHub Actions steps
+          # ========================================================
+
+          Add-Content -Path $env:GITHUB_ENV `
+            -Value "TCL_LIBRARY_HINT=$($tclLib.FullName -replace '\\','/')"
+
+          Add-Content -Path $env:GITHUB_ENV `
+            -Value "TK_LIBRARY_HINT=$($tkLib.FullName -replace '\\','/')"
+
+          Add-Content -Path $env:GITHUB_ENV `
+            -Value "TCLTK_INCLUDE_HINT=$($tcltkDir -replace '\\','/')/include"
+
+          Add-Content -Path $env:GITHUB_ENV `
+            -Value "TCLTK_BIN_DIR=$($tcltkDir -replace '\\','/')/bin"
+
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host "Tcl/Tk installation completed successfully"
+          Write-Host "=========================================="
+          Write-Host "Tcl lib: $($tclLib.FullName)"
+          Write-Host "Tk lib : $($tkLib.FullName)"
+          Write-Host "Include: $tcltkDir\include"
+          Write-Host "Bin    : $tcltkDir\bin"
+          Write-Host "=========================================="
+
+          
       # ============================================================
       # Intel oneAPI
       #
