@@ -1,0 +1,111 @@
+name: grok-serial-profiling
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/grok-serial-profiling.yml'
+
+jobs:
+  build:
+    name: OpenSees Serial Profiling (Windows)
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout OpenSees official source
+        uses: actions/checkout@v4
+        with:
+          repository: OpenSees/OpenSees
+          fetch-depth: 0
+
+      - name: Setup MSVC 2022
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          vsversion: 2022
+
+      - name: Install Intel oneAPI (MKL + Fortran/ifx)
+        shell: pwsh
+        env:
+          WINDOWS_BASEKIT_URL: https://registrationcenter-download.intel.com/akdlm/IRC_NAS/7dff44ba-e3af-4448-841c-0d616c8da6e7/w_BaseKit_p_2024.1.0.595_offline.exe
+          WINDOWS_BASEKIT_COMPONENTS: intel.oneapi.win.mkl.devel
+          WINDOWS_HPCKIT_URL: https://registrationcenter-download.intel.com/akdlm/IRC_NAS/c95a3b26-fc45-496c-833b-df08b10297b9/w_HPCKit_p_2024.1.0.561_offline.exe
+          WINDOWS_HPCKIT_COMPONENTS: "intel.oneapi.win.mpi.devel:intel.oneapi.win.ifort-compiler"
+        run: |
+          # install script from official OpenSees repo
+          $script = @"
+          REM SPDX-FileCopyrightText: 2022 Intel Corporation
+          set URL=%1
+          set COMPONENTS=%2
+          curl.exe --output %TEMP%\webimage.exe --url %URL% --retry 5 --retry-delay 5
+          start /b /wait %TEMP%\webimage.exe -s -x -f webimage_extracted --log extract.log
+          del %TEMP%\webimage.exe
+          webimage_extracted\bootstrapper.exe -s --action install --components=%COMPONENTS% --eula=accept -p=NEED_VS2017_INTEGRATION=0 -p=NEED_VS2019_INTEGRATION=1 -p=NEED_VS2022_INTEGRATION=0 --log-dir=.
+          set installer_exit_code=%ERRORLEVEL%
+          rd /s/q "webimage_extracted"
+          exit /b %installer_exit_code%
+          "@
+          $script | Out-File -Encoding ascii install_oneapi.bat
+          cmd /c "install_oneapi.bat $env:WINDOWS_BASEKIT_URL $env:WINDOWS_BASEKIT_COMPONENTS"
+          cmd /c "install_oneapi.bat $env:WINDOWS_HPCKIT_URL $env:WINDOWS_HPCKIT_COMPONENTS"
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Conan
+        run: |
+          pip install conan
+          conan profile detect --force
+
+      - name: Build MUMPS (needed by CMake even for serial)
+        shell: cmd
+        run: |
+          git clone https://github.com/OpenSees/mumps.git
+          cd mumps
+          call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 mod
+          cmake -S . -B build -G Ninja -Darith=d -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" -DCMAKE_EXE_LINKER_FLAGS="/link /FORCE:MULTIPLE" -DCMAKE_SHARED_LINKER_FLAGS="/link /FORCE:MULTIPLE"
+          cd build
+          cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS%
+
+      # ---------- PROFILING (line-accurate) ----------
+      - name: Configure + Build OpenSees Profiling
+        shell: cmd
+        run: |
+          set CMAKE_POLICY_VERSION_MINIMUM=3.5
+          conan install . -s arch=x86_64 -s compiler.runtime=static --build=missing -c tools.cmake.cmaketoolchain:generator=Ninja -of build/Profiling
+          call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 mod
+          cmake.exe -S . -B build/Profiling -G "Ninja" ^
+            -DCMAKE_TOOLCHAIN_FILE=build/Profiling/generators/conan_toolchain.cmake ^
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
+            -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" ^
+            -DCMAKE_Fortran_COMPILER="ifx" ^
+            -DBLA_STATIC=ON -DMKL_LINK=static -DMKL_INTERFACE_FULL=intel_lp64 ^
+            -DMUMPS_DIR="..\..\mumps\build" ^
+            -DCMAKE_CXX_FLAGS="/bigobj /Zi /Od" ^
+            -DCMAKE_EXE_LINKER_FLAGS="/DEBUG /FORCE:MULTIPLE /OPT:REF /OPT:ICF" ^
+            -DCMAKE_SHARED_LINKER_FLAGS="/DEBUG /FORCE:MULTIPLE" ^
+            -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
+          cd build/Profiling
+          cmake --build . --config RelWithDebInfo --target OpenSees --parallel %NUMBER_OF_PROCESSORS%
+
+      - name: Prepare artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts/profiling | Out-Null
+          Copy-Item build/Profiling/OpenSees.exe artifacts/profiling/
+          if (Test-Path "build/Profiling/OpenSees.pdb") { Copy-Item "build/Profiling/OpenSees.pdb" artifacts/profiling/ }
+          # copy Intel OpenMP runtime if present
+          $iomp = "C:\Program Files (x86)\Intel\oneAPI\compiler\2024.1\bin\libiomp5md.dll"
+          if (Test-Path $iomp) { Copy-Item $iomp artifacts/profiling/ }
+
+          # quick sanity
+          echo 'puts "OpenSees serial profiling OK"; exit' | .\artifacts\profiling\OpenSees.exe
+
+      - name: Upload ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: grok-OpenSees-serial-profiling-windows
+          path: artifacts/
+          retention-days: 30
