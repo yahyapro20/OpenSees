@@ -70,6 +70,7 @@ jobs:
           cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS%
 
       # ---------- RELEASE (optimized) ----------
+
       # ---------- RELEASE (optimized) ----------
       - name: Configure + Build OpenSees Release
         shell: cmd
@@ -89,8 +90,8 @@ jobs:
             -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
           cd build/Release
           cmake --build . --config Release --target OpenSees --parallel %NUMBER_OF_PROCESSORS%
-
-            # ---------- PROFILING (line-accurate) ----------
+          
+      # ---------- PROFILING (line-accurate) ----------
       - name: Configure + Build OpenSees Profiling
         shell: cmd
         run: |
