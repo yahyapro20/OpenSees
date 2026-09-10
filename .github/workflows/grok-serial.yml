@@ -70,61 +70,33 @@ jobs:
           cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS%
 
       # ---------- RELEASE (optimized) ----------
-
-      # ---------- RELEASE (optimized) ----------
-     # - name: Configure + Build OpenSees Release
-      #  shell: cmd
-      #  run: |
-       #   set CMAKE_POLICY_VERSION_MINIMUM=3.5
-       #   conan install . -s arch=x86_64 -s compiler.runtime=static --build=missing -c tools.cmake.cmaketoolchain:generator=Ninja
-       #   call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 mod
-         # cmake.exe -S . -B build/Release -G "Ninja" ^
-         #   -DCMAKE_TOOLCHAIN_FILE=build/Release/generators/conan_toolchain.cmake ^
-        #    -DCMAKE_BUILD_TYPE=Release ^
-       #     -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" ^
-      #      -DCMAKE_Fortran_COMPILER="ifx" ^
-       #     -DBLA_STATIC=ON -DMKL_LINK=static -DMKL_INTERFACE_FULL=intel_lp64 ^
-       #     -DMUMPS_DIR="..\..\mumps\build" ^
-          #  -DCMAKE_EXE_LINKER_FLAGS="/FORCE:MULTIPLE" ^
-         #   -DCMAKE_SHARED_LINKER_FLAGS="/FORCE:MULTIPLE" ^
-        #    -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
-        #  cd build/Release
-       #   cmake --build . --config Release --target OpenSees --parallel %NUMBER_OF_PROCESSORS%
-          
-      # ---------- PROFILING (line-accurate) ----------
-      # ---------- PROFILING (line-accurate) ----------
-      - name: Configure + Build OpenSees Profiling
+      - name: Configure + Build OpenSees Release
         shell: cmd
         run: |
           set CMAKE_POLICY_VERSION_MINIMUM=3.5
-          conan install . -s arch=x86_64 -s compiler.runtime=static --build=missing -c tools.cmake.cmaketoolchain:generator=Ninja -of build/Profiling
+          conan install . -s arch=x86_64 -s compiler.runtime=static --build=missing -c tools.cmake.cmaketoolchain:generator=Ninja -of build/Release
           call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 mod
-          cmake.exe -S . -B build/Profiling -G "Ninja" ^
-            -DCMAKE_TOOLCHAIN_FILE=build/Profiling/generators/conan_toolchain.cmake ^
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
+          cmake.exe -S . -B build/Release -G "Ninja" ^
+            -DCMAKE_TOOLCHAIN_FILE=build/Release/generators/conan_toolchain.cmake ^
+            -DCMAKE_BUILD_TYPE=Release ^
             -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" ^
             -DCMAKE_Fortran_COMPILER="ifx" ^
             -DBLA_STATIC=ON -DMKL_LINK=static -DMKL_INTERFACE_FULL=intel_lp64 ^
             -DMUMPS_DIR="..\..\mumps\build" ^
-            -DCMAKE_CXX_FLAGS="/bigobj" ^
-            -DCMAKE_EXE_LINKER_FLAGS="/DEBUG /FORCE:MULTIPLE" ^
-            -DCMAKE_SHARED_LINKER_FLAGS="/DEBUG /FORCE:MULTIPLE" ^
+            -DCMAKE_EXE_LINKER_FLAGS="/FORCE:MULTIPLE" ^
+            -DCMAKE_SHARED_LINKER_FLAGS="/FORCE:MULTIPLE" ^
             -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
-          cd build/Profiling
-          cmake --build . --config RelWithDebInfo --target OpenSees --parallel %NUMBER_OF_PROCESSORS%%
-      
+          cd build/Release
+          cmake --build . --config Release --target OpenSees --parallel %NUMBER_OF_PROCESSORS%
+
       - name: Prepare artifacts
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path artifacts/release, artifacts/profiling | Out-Null
+          New-Item -ItemType Directory -Force -Path artifacts/release | Out-Null
           Copy-Item build/Release/OpenSees.exe artifacts/release/
           # copy runtime if present
           $iomp = "C:\Program Files (x86)\Intel\oneAPI\compiler\2024.1\bin\libiomp5md.dll"
           if (Test-Path $iomp) { Copy-Item $iomp artifacts/release/ }
-
-          Copy-Item build/Profiling/OpenSees.exe artifacts/profiling/
-          if (Test-Path "build/Profiling/OpenSees.pdb") { Copy-Item build/Profiling/OpenSees.pdb artifacts/profiling/ }
-          if (Test-Path $iomp) { Copy-Item $iomp artifacts/profiling/ }
 
           # quick sanity
           echo 'puts "OpenSees serial OK"; exit' | .\artifacts\release\OpenSees.exe
