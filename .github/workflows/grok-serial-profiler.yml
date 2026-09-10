@@ -73,25 +73,25 @@ jobs:
       - name: Configure + Build OpenSees Profiling
         shell: cmd
         run: |
-          set CMAKE_POLICY_VERSION_MINIMUM=3.5
-          conan install . -s arch=x86_64 -s compiler.runtime=static --build=missing -c tools.cmake.cmaketoolchain:generator=Ninja -of build/Profiling
-          call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 mod
-          cmake.exe -S . -B build/Profiling -G "Ninja" ^
-            -DCMAKE_TOOLCHAIN_FILE=build/Profiling/generators/conan_toolchain.cmake ^
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
-            -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" ^
-            -DCMAKE_Fortran_COMPILER="ifx" ^
-            -DBLA_STATIC=ON -DMKL_LINK=static -DMKL_INTERFACE_FULL=intel_lp64 ^
-            -DMUMPS_DIR="..\..\mumps\build" ^
-            -DCMAKE_CXX_FLAGS="/bigobj /Zi /Od" ^
-            -DCMAKE_EXE_LINKER_FLAGS="/DEBUG /FORCE:MULTIPLE /OPT:REF /OPT:ICF" ^
-            -DCMAKE_SHARED_LINKER_FLAGS="/DEBUG /FORCE:MULTIPLE" ^
-            -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
-          cd build/Profiling
-          cmake --build . --config RelWithDebInfo --target OpenSees --parallel %NUMBER_OF_PROCESSORS%
+         set CMAKE_POLICY_VERSION_MINIMUM=3.5
+         conan install . -s arch=x86_64 -s compiler.runtime=static --build=missing -c tools.cmake.cmaketoolchain:generator=Ninja -of build/Profiling
+         call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 mod
+         cd build\Profiling
+         cmake.exe -S ../.. -B . -G "Ninja" ^
+         -DCMAKE_TOOLCHAIN_FILE=generators/conan_toolchain.cmake ^
+         -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
+         -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" ^
+         -DCMAKE_Fortran_COMPILER="ifx" ^
+         -DBLA_STATIC=ON -DMKL_LINK=static -DMKL_INTERFACE_FULL=intel_lp64 ^
+         -DMUMPS_DIR="%CD%\..\..\..\mumps\build" ^
+         -DCMAKE_CXX_FLAGS="/bigobj /Zi /Od" ^
+         -DCMAKE_EXE_LINKER_FLAGS="/DEBUG /FORCE:MULTIPLE" ^
+         -DCMAKE_SHARED_LINKER_FLAGS="/DEBUG /FORCE:MULTIPLE" ^
+         -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
+         cmake --build . --config RelWithDebInfo --target OpenSees --parallel %NUMBER_OF_PROCESSORS%
 
       - name: Prepare artifacts
-        shell: pwsh
+      shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts/profiling | Out-Null
           Copy-Item build/Profiling/OpenSees.exe artifacts/profiling/
