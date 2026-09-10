@@ -70,6 +70,7 @@ jobs:
           cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS%
 
       # ---------- RELEASE (optimized) ----------
+      # ---------- RELEASE (optimized) ----------
       - name: Configure + Build OpenSees Release
         shell: cmd
         run: |
@@ -83,8 +84,6 @@ jobs:
             -DCMAKE_Fortran_COMPILER="ifx" ^
             -DBLA_STATIC=ON -DMKL_LINK=static -DMKL_INTERFACE_FULL=intel_lp64 ^
             -DMUMPS_DIR="..\..\mumps\build" ^
-            -DCMAKE_C_FLAGS="/O2 /arch:AVX2 /DNDEBUG" ^
-            -DCMAKE_CXX_FLAGS="/O2 /arch:AVX2 /DNDEBUG" ^
             -DCMAKE_EXE_LINKER_FLAGS="/FORCE:MULTIPLE" ^
             -DCMAKE_SHARED_LINKER_FLAGS="/FORCE:MULTIPLE" ^
             -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
