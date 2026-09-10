@@ -91,7 +91,7 @@ jobs:
          cmake --build . --config RelWithDebInfo --target OpenSees --parallel %NUMBER_OF_PROCESSORS%
 
       - name: Prepare artifacts
-      shell: pwsh
+        shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts/profiling | Out-Null
           Copy-Item build/Profiling/OpenSees.exe artifacts/profiling/
