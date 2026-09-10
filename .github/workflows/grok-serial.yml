@@ -90,7 +90,7 @@ jobs:
           cd build/Release
           cmake --build . --config Release --target OpenSees --parallel %NUMBER_OF_PROCESSORS%
 
-      # ---------- PROFILING (line-accurate) ----------
+            # ---------- PROFILING (line-accurate) ----------
       - name: Configure + Build OpenSees Profiling
         shell: cmd
         run: |
@@ -103,6 +103,7 @@ jobs:
             -DCMAKE_Fortran_COMPILER="ifx" ^
             -DBLA_STATIC=ON -DMKL_LINK=static -DMKL_INTERFACE_FULL=intel_lp64 ^
             -DMUMPS_DIR="..\..\mumps\build" ^
+            -DCMAKE_CXX_FLAGS="/bigobj" ^
             -DCMAKE_EXE_LINKER_FLAGS="/DEBUG /FORCE:MULTIPLE" ^
             -DCMAKE_SHARED_LINKER_FLAGS="/DEBUG /FORCE:MULTIPLE" ^
             -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
