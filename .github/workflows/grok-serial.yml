@@ -85,7 +85,6 @@ jobs:
             -DMUMPS_DIR="..\..\mumps\build" ^
             -DCMAKE_C_FLAGS="/O2 /arch:AVX2 /DNDEBUG" ^
             -DCMAKE_CXX_FLAGS="/O2 /arch:AVX2 /DNDEBUG" ^
-            -DCMAKE_Fortran_FLAGS="/O2 /arch:AVX2" ^
             -DCMAKE_EXE_LINKER_FLAGS="/FORCE:MULTIPLE" ^
             -DCMAKE_SHARED_LINKER_FLAGS="/FORCE:MULTIPLE" ^
             -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
@@ -107,13 +106,12 @@ jobs:
             -DMUMPS_DIR="..\..\mumps\build" ^
             -DCMAKE_C_FLAGS="/O2 /arch:AVX2 /Zi /Oy- /DNDEBUG" ^
             -DCMAKE_CXX_FLAGS="/O2 /arch:AVX2 /Zi /Oy- /DNDEBUG" ^
-            -DCMAKE_Fortran_FLAGS="/O2 /arch:AVX2 /Zi /Oy-" ^
             -DCMAKE_EXE_LINKER_FLAGS="/DEBUG /FORCE:MULTIPLE" ^
             -DCMAKE_SHARED_LINKER_FLAGS="/DEBUG /FORCE:MULTIPLE" ^
             -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
           cd build/Profiling
           cmake --build . --config RelWithDebInfo --target OpenSees --parallel %NUMBER_OF_PROCESSORS%
-
+      
       - name: Prepare artifacts
         shell: pwsh
         run: |
