@@ -1,0 +1,373 @@
+name: grok-sp-profiler
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/grok-sp-profiler.yml'
+
+jobs:
+  build-and-profile:
+    name: OpenSeesSP Parallel Profiling (Windows)
+    runs-on: windows-2022
+    timeout-minutes: 180
+
+    steps:
+      # ---------------------------------------------------------
+      # 1. Source & Tooling
+      # ---------------------------------------------------------
+      - name: Checkout OpenSees official source
+        uses: actions/checkout@v4
+        with:
+          repository: OpenSees/OpenSees
+          fetch-depth: 0
+
+      - name: Setup MSVC 2022
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          vsversion: 2022
+
+      - name: Install Intel oneAPI (MKL + Fortran/ifx + MPI)
+        shell: pwsh
+        env:
+          WINDOWS_BASEKIT_URL: https://registrationcenter-download.intel.com/akdlm/IRC_NAS/7dff44ba-e3af-4448-841c-0d616c8da6e7/w_BaseKit_p_2024.1.0.595_offline.exe
+          WINDOWS_BASEKIT_COMPONENTS: intel.oneapi.win.mkl.devel
+          WINDOWS_HPCKIT_URL: https://registrationcenter-download.intel.com/akdlm/IRC_NAS/c95a3b26-fc45-496c-833b-df08b10297b9/w_HPCKit_p_2024.1.0.561_offline.exe
+          WINDOWS_HPCKIT_COMPONENTS: "intel.oneapi.win.mpi.devel:intel.oneapi.win.ifort-compiler"
+        run: |
+          $script = @"
+          REM SPDX-FileCopyrightText: 2022 Intel Corporation
+          set URL=%1
+          set COMPONENTS=%2
+          curl.exe --output %TEMP%\webimage.exe --url %URL% --retry 5 --retry-delay 5
+          start /b /wait %TEMP%\webimage.exe -s -x -f webimage_extracted --log extract.log
+          del %TEMP%\webimage.exe
+          webimage_extracted\bootstrapper.exe -s --action install --components=%COMPONENTS% --eula=accept -p=NEED_VS2017_INTEGRATION=0 -p=NEED_VS2019_INTEGRATION=1 -p=NEED_VS2022_INTEGRATION=0 --log-dir=.
+          set installer_exit_code=%ERRORLEVEL%
+          rd /s /q "webimage_extracted"
+          exit /b %installer_exit_code%
+          "@
+          $script | Out-File -Encoding ascii install_oneapi.bat
+          cmd /c "install_oneapi.bat $env:WINDOWS_BASEKIT_URL $env:WINDOWS_BASEKIT_COMPONENTS"
+          cmd /c "install_oneapi.bat $env:WINDOWS_HPCKIT_URL $env:WINDOWS_HPCKIT_COMPONENTS"
+
+      - name: Install Intel VTune Profiler
+        shell: pwsh
+        run: |
+          $vtune = "C:\Program Files (x86)\Intel\oneAPI\vtune\latest\bin64\vtune.exe"
+          if (Test-Path $vtune) {
+            Write-Host "VTune found at: $vtune"
+          } else {
+            Write-Host "WARNING: VTune not found. Profiling step will fail."
+          }
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Conan
+        run: |
+          pip install conan
+          conan profile detect --force
+
+      # ---------------------------------------------------------
+      # 2. Build MUMPS (Parallel)
+      # ---------------------------------------------------------
+      - name: Build MUMPS (Parallel)
+        shell: cmd
+        run: |
+          git clone https://github.com/OpenSees/mumps.git
+          cd mumps
+          call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 mod
+          cmake -S . -B build -G Ninja ^
+            -Darith=d ^
+            -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" ^
+            -DCMAKE_EXE_LINKER_FLAGS="/link /FORCE:MULTIPLE" ^
+            -DCMAKE_SHARED_LINKER_FLAGS="/link /FORCE:MULTIPLE"
+          cd build
+          cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS%
+
+      # ---------------------------------------------------------
+      # 3. Patches
+      # ---------------------------------------------------------
+      - name: Patch DistributedSuperLU (stat conflict)
+        shell: pwsh
+        run: |
+          $file = "SRC/system_of_eqn/linearSOE/sparseGEN/DistributedSuperLU.cpp"
+          if (Test-Path $file) {
+            Write-Host "Patching $file ..."
+            $content = Get-Content $file -Raw
+            $content = $content -replace 'SuperLUStat_t\s+stat\s*;', 'SuperLUStat_t superlu_stat;'
+            $content = $content -replace '&stat\b', '&superlu_stat'
+            $content = $content -replace '\bstat\.', 'superlu_stat.'
+            $content = $content -replace '\bstat,', 'superlu_stat,'
+            $content = $content -replace '\(stat\)', '(superlu_stat)'
+            Set-Content -Path $file -Value $content -NoNewline
+            Write-Host "DistributedSuperLU.cpp patched"
+          }
+
+      - name: Patch GmshRecorder.cpp (VLA → std::vector for MSVC)
+        shell: pwsh
+        run: |
+          $file = "SRC/recorder/GmshRecorder.cpp"
+          if (Test-Path $file) {
+            Write-Host "Patching $file ..."
+            $content = Get-Content $file -Raw
+            $content = $content -replace 'int numvertex_proc\[nproc\];', 'std::vector<int> numvertex_proc(nproc);'
+            $content = $content -replace 'MPI_Allgather\(\s*&numvertex\s*,\s*1\s*,\s*MPI_INT\s*,\s*numvertex_proc\s*,', 'MPI_Allgather(&numvertex, 1, MPI_INT, numvertex_proc.data(),'
+            Set-Content -Path $file -Value $content -NoNewline
+            Write-Host "GmshRecorder.cpp patched successfully"
+          } else {
+            Write-Host "WARNING: GmshRecorder.cpp not found"
+          }
+
+      # ---------------------------------------------------------
+      # 4. Configure + Build OpenSeesSP with Debug Symbols
+      # ---------------------------------------------------------
+      - name: Configure + Build OpenSeesSP (with debug info)
+        shell: cmd
+        run: |
+          set CMAKE_POLICY_VERSION_MINIMUM=3.5
+          conan install . -s arch=x86_64 -s compiler.runtime=static --build=missing -c tools.cmake.cmaketoolchain:generator=Ninja -of build/Profiling
+          call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 mod
+          cd build\Profiling
+          cmake.exe -S ../.. -B build/Release -G "Ninja" ^
+            -DCMAKE_TOOLCHAIN_FILE=generators/conan_toolchain.cmake ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" ^
+            -DCMAKE_Fortran_COMPILER="ifx" ^
+            -DBLA_STATIC=ON -DMKL_LINK=static -DMKL_INTERFACE_FULL=intel_lp64 ^
+            -DMUMPS_DIR="%CD%\..\..\..\mumps\build" ^
+            -DCMAKE_CXX_FLAGS_RELEASE="/Zi /Od /bigobj /DNDEBUG" ^
+            -DCMAKE_C_FLAGS_RELEASE="/Zi /Od /DNDEBUG" ^
+            -DCMAKE_EXE_LINKER_FLAGS="/DEBUG /FORCE:MULTIPLE" ^
+            -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
+          cd build\Release
+          cmake --build . --config Release --target OpenSeesSP --parallel %NUMBER_OF_PROCESSORS%
+
+      # ---------------------------------------------------------
+      # 5. Profile with VTune (MPI-aware)
+      # ---------------------------------------------------------
+      - name: Profile OpenSeesSP with VTune
+        shell: pwsh
+        run: |
+          $vtuneDir = "C:\Program Files (x86)\Intel\oneAPI\vtune\latest\bin64"
+          $vtune = Join-Path $vtuneDir "vtune.exe"
+          if (-not (Test-Path $vtune)) {
+            Write-Host "VTune not found. Skipping profiling."
+            exit 0
+          }
+
+          $mpiBin = "C:\Program Files (x86)\Intel\oneAPI\mpi\latest\bin"
+          $mpiexec = Join-Path $mpiBin "mpiexec.exe"
+
+          $env:I_MPI_FABRICS = "shm"
+          $env:I_MPI_OFI_PROVIDER = "sockets"
+          $env:PATH = "$vtuneDir;$mpiBin;$env:PATH"
+
+          $testTcl = @"
+          puts "OpenSeesSP profiling test running..."
+          model BasicBuilder -ndm 2 -ndf 3
+          node 1 0.0 0.0
+          node 2 1.0 0.0
+          fix 1 1 1 1
+          fix 2 1 1 1
+          puts "Model created. Exiting."
+          exit
+          "@
+          $testTcl | Out-File -Encoding ascii "build\Profiling\build\Release\profile_test.tcl"
+
+          $resultDir = "vtune_results"
+          if (Test-Path $resultDir) { Remove-Item -Recurse -Force $resultDir }
+
+          Write-Host "Launching VTune profiling with 2 MPI ranks..."
+          Push-Location "build\Profiling\build\Release"
+          & $mpiexec -np 2 -genvall `
+            "$vtune" -collect hotspots -trace-mpi -result-dir "$resultDir" -quiet `
+            -- .\OpenSeesSP.exe profile_test.tcl
+          $ec = $LASTEXITCODE
+          Pop-Location
+
+          if ($ec -ne 0) {
+            Write-Host "VTune profiling exited with code $ec"
+          } else {
+            Write-Host "VTune profiling completed. Results in: $resultDir"
+          }
+
+      # ---------------------------------------------------------
+      # 6. Generate README for the artifact
+      # ---------------------------------------------------------
+      - name: Generate README
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts/profiling | Out-Null
+
+          # Collect info about what's being shipped
+          $hasExe  = Test-Path "build/Profiling/build/Release/OpenSeesSP.exe"
+          $hasPdb  = Test-Path "build/Profiling/build/Release/OpenSeesSP.pdb"
+          $hasVtune = Test-Path "build/Profiling/build/Release/vtune_results"
+
+          $exeSize = if ($hasExe) {
+            [math]::Round((Get-Item "build/Profiling/build/Release/OpenSeesSP.exe").Length / 1MB, 2)
+          } else { "N/A" }
+
+          $buildDate = (Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
+          $gitSha = (git rev-parse HEAD).Trim()
+          $gitShaShort = $gitSha.Substring(0, 7)
+
+          $readme = @"
+          ================================================================
+           OpenSeesSP - Parallel Build (Windows x64)
+           WITH Intel VTune Profiler results included
+          ================================================================
+
+          Build Information
+          -----------------
+          Built on        : $buildDate
+          OpenSees commit : $gitShaShort
+          Executable size : $exeSize MB
+          Compiler        : MSVC 2022 + Intel ifx 2024.1
+          Math library    : Intel oneAPI MKL 2024.1 (static link)
+          MPI             : Intel MPI 2021.12
+          Solver backend  : MUMPS 5.5.1 (parallel)
+          Build type      : Release with debug symbols (/Zi /Od)
+          Target          : OpenSeesSP.exe
+
+          Contents
+          --------
+          $(if ($hasExe) { "  [X] OpenSeesSP.exe          Parallel OpenSees executable" } else { "  [ ] OpenSeesSP.exe          (missing!)" })
+          $(if ($hasPdb) { "  [X] OpenSeesSP.pdb          Debug symbols (needed by VTune)" } else { "  [ ] OpenSeesSP.pdb          (not built)" })
+          $(if ($hasVtune) { "  [X] vtune_results/          VTune profiling output (per-rank)" } else { "  [ ] vtune_results/          (no profiling data)" })
+          "  [X] profile_test.tcl        Test script used during profiling"
+          "  [X] README.txt              This file"
+
+          Prerequisites (REQUIRED on the target machine)
+          ----------------------------------------------
+          This binary requires Intel oneAPI runtime. Install the
+          Intel oneAPI HPC Toolkit (which includes MPI + Fortran runtime):
+
+            https://www.intel.com/content/www/us/en/developer/tools/oneapi/hpc-toolkit.html
+
+          After installation, run the environment setup ONCE per shell:
+
+            call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64
+
+          This is mandatory - without it, mpiexec and the Intel runtime
+          DLLs will not be on PATH and the executable will fail to start.
+
+          Running the executable
+          ----------------------
+          1. Open a "x64 Native Tools Command Prompt for VS 2022"
+             (or any cmd.exe after running setvars.bat).
+
+          2. cd into the folder containing OpenSeesSP.exe.
+
+          3. Run in parallel, e.g. with 4 MPI ranks:
+
+               mpiexec -np 4 OpenSeesSP.exe your_model.tcl
+
+             For a quick smoke test:
+
+               mpiexec -np 2 OpenSeesSP.exe profile_test.tcl
+
+          Notes:
+          - On a single Windows workstation, you may need:
+                set I_MPI_FABRICS=shm
+            to force shared-memory transport (avoids OFI/RDMA errors).
+          - Rank count (-np N) should typically not exceed the number
+            of physical CPU cores on the machine.
+
+          Viewing VTune profiling results
+          -------------------------------
+          If vtune_results/ is present in this archive, it was produced
+          by running:
+
+            mpiexec -np 2 -genvall vtune -collect hotspots -trace-mpi \
+                -result-dir vtune_results -- OpenSeesSP.exe profile_test.tcl
+
+          To open the results you need the VTune GUI:
+
+            1. Install Intel VTune Profiler (part of oneAPI Base Toolkit,
+               or standalone free download from Intel).
+
+            2. Launch the GUI:
+
+                 "C:\Program Files (x86)\Intel\oneAPI\vtune\latest\bin64\vtune-gui.exe"
+
+            3. File -> Open -> Result... and select one of the
+               vtune_results.* subdirectories (VTune creates one result
+               directory per MPI rank, e.g. vtune_results.0, .1, ...).
+
+            4. In the GUI you can inspect:
+                 - Hotspots (where CPU time is spent, per function)
+                 - Call stacks (if VTune captured them)
+                 - Per-rank comparison (Bottom-up / Top-down views)
+                 - Thread and MPI imbalance
+
+          Caveats
+          -------
+          - The OpenSeesSP executable in this artifact was built with
+            /Od (optimizations disabled) so that VTune can map samples
+            to source lines accurately. Do NOT use this build for
+            production / performance benchmarking.
+          - For production use, rebuild with /O2 (see the sibling
+            "grok-sp" workflow).
+
+          Troubleshooting
+          ---------------
+          - "mpiexec not found"
+              You forgot to run setvars.bat, or oneAPI is not installed.
+
+          - "libifcoremd.dll not found" / "libmmd.dll not found"
+              Same cause as above. setvars.bat puts these on PATH.
+
+          - MPI_Init fails with "MPIDI_OFI_mpi_init_hook" error
+              On machines without RDMA/InfiniBand, set:
+                set I_MPI_FABRICS=shm
+
+          - VTune GUI shows no source lines
+              Make sure OpenSeesSP.pdb sits next to OpenSeesSP.exe
+              when you open the result in the GUI.
+
+          ================================================================
+          "@
+
+          # Normalize indentation from the here-string
+          $readme = ($readme -split "`r?`n" | ForEach-Object {
+            if ($_ -match '^\s{10}') { $_ -replace '^\s{10}', '' } else { $_ }
+          }) -join "`r`n"
+
+          Set-Content -Path "artifacts/profiling/README.txt" -Value $readme -Encoding UTF8
+          Write-Host "README.txt generated."
+
+      # ---------------------------------------------------------
+      # 7. Collect Artifacts
+      # ---------------------------------------------------------
+      - name: Prepare artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts/profiling | Out-Null
+
+          Copy-Item "build/Profiling/build/Release/OpenSeesSP.exe" artifacts/profiling/
+          if (Test-Path "build/Profiling/build/Release/OpenSeesSP.pdb") {
+            Copy-Item "build/Profiling/build/Release/OpenSeesSP.pdb" artifacts/profiling/
+          }
+          if (Test-Path "build/Profiling/build/Release/vtune_results") {
+            Copy-Item -Recurse "build/Profiling/build/Release/vtune_results" artifacts/profiling/
+          }
+          if (Test-Path "build/Profiling/build/Release/profile_test.tcl") {
+            Copy-Item "build/Profiling/build/Release/profile_test.tcl" artifacts/profiling/
+          }
+
+          Write-Host "=== Artifact contents ==="
+          Get-ChildItem artifacts/profiling -Recurse | ForEach-Object {
+            Write-Host "  $($_.FullName.Replace($PWD.Path + '\', ''))"
+          }
+
+      - name: Upload ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: grok-OpenSeesSP-profiling-windows
+          path: artifacts/
+          retention-days: 30
