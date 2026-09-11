@@ -69,13 +69,12 @@ jobs:
           cd build
           cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS%
 
-      # ---------- Patches for Windows OpenSeesSP ----------
       - name: Patch DistributedSuperLU (stat conflict)
         shell: pwsh
         run: |
           $file = "SRC/system_of_eqn/linearSOE/sparseGEN/DistributedSuperLU.cpp"
           if (Test-Path $file) {
-            Write-Host "Patching $file for stat conflict..."
+            Write-Host "Patching $file ..."
             $content = Get-Content $file -Raw
             $content = $content -replace 'SuperLUStat_t\s+stat\s*;', 'SuperLUStat_t superlu_stat;'
             $content = $content -replace '&stat\b', '&superlu_stat'
@@ -83,32 +82,9 @@ jobs:
             $content = $content -replace '\bstat,', 'superlu_stat,'
             $content = $content -replace '\(stat\)', '(superlu_stat)'
             Set-Content -Path $file -Value $content -NoNewline
-            Write-Host "DistributedSuperLU.cpp patched"
-          } else {
-            Write-Host "WARNING: DistributedSuperLU.cpp not found"
+            Write-Host "Patched successfully"
           }
 
-      - name: Patch Domain → PartitionedDomain (linking fix)
-        shell: pwsh
-        run: |
-          $files = @(
-            "SRC/tcl/myCommands.cpp",
-            "SRC/tcl/commands.cpp",
-            "SRC/tcl/tclMain.cpp",
-            "SRC/tcl/mpiMain.cpp"
-          )
-          foreach ($f in $files) {
-            if (Test-Path $f) {
-              Write-Host "Patching $f ..."
-              $content = Get-Content $f -Raw
-              $content = $content -replace 'extern\s+Domain\s+theDomain\s*;', 'extern PartitionedDomain theDomain;'
-              $content = $content -replace 'Domain\s+theDomain\s*;', 'PartitionedDomain theDomain;'
-              Set-Content -Path $f -Value $content -NoNewline
-              Write-Host "  → $f patched"
-            }
-          }
-
-      # ---------- Configure + Build OpenSeesSP only ----------
       - name: Configure + Build OpenSeesSP
         shell: cmd
         run: |
@@ -131,91 +107,53 @@ jobs:
           cd build/Release
           cmake --build . --config Release --target OpenSeesSP --parallel %NUMBER_OF_PROCESSORS%
 
-      - name: Verify MKL + Sanity (OpenSeesSP + Mumps)
+      - name: Verify MKL + Sanity
         shell: pwsh
         run: |
-          Write-Host "=== 1. Checking binary ===" -ForegroundColor Cyan
           $exePath = "build/Release/OpenSeesSP.exe"
           if (-not (Test-Path $exePath)) {
-            Write-Host "❌ OpenSeesSP.exe not found" -ForegroundColor Red
+            Write-Host "OpenSeesSP.exe not found"
             exit 1
           }
-          $sizeMB = [math]::Round((Get-Item $exePath).Length / 1MB, 2)
-          Write-Host "OpenSeesSP.exe size: $sizeMB MB"
+          Write-Host "OpenSeesSP.exe size: $([math]::Round((Get-Item $exePath).Length / 1MB, 2)) MB"
 
           $content = [System.IO.File]::ReadAllText($exePath, [System.Text.Encoding]::GetEncoding(28591))
           if ($content.Contains("Math Kernel Library")) {
-            Write-Host "✅ MKL found in binary" -ForegroundColor Green
+            Write-Host "MKL found in binary"
           } else {
-            Write-Host "❌ MKL NOT found - Fallback!" -ForegroundColor Red
+            Write-Host "MKL NOT found"
             exit 1
           }
 
-          Write-Host ""
-          Write-Host "=== 2. Copy runtime DLLs ===" -ForegroundColor Cyan
-          $iompCandidates = @(
-            "C:\Program Files (x86)\Intel\oneAPI\compiler\2024.1\bin\libiomp5md.dll",
-            "C:\Program Files (x86)\Intel\oneAPI\compiler\latest\bin\libiomp5md.dll"
-          )
-          foreach ($p in $iompCandidates) {
-            if (Test-Path $p) {
-              Copy-Item $p "build\Release\" -Force
-              Write-Host "Copied libiomp5md.dll"
-              break
-            }
-          }
+          # Copy DLL
+          $iomp = "C:\Program Files (x86)\Intel\oneAPI\compiler\2024.1\bin\libiomp5md.dll"
+          if (Test-Path $iomp) { Copy-Item $iomp "build\Release\" -Force }
 
-          Write-Host ""
-          Write-Host "=== 3. Sanity run (mpiexec -np 2 + system Mumps) ===" -ForegroundColor Cyan
-
-          $testTcl = @"
-          system Mumps
-          puts {MUMPS solver OK}
-          exit
-          "@
-          $testTcl | Out-File -Encoding ascii -FilePath "build\Release\test_mumps.tcl"
+          # Test
+          $testTcl = "system Mumps`nputs {MUMPS solver OK}`nexit"
+          $testTcl | Out-File -Encoding ascii "build\Release\test_mumps.tcl"
 
           Push-Location build\Release
-          $mpiexec = "C:\Program Files (x86)\Intel\oneAPI\mpi\latest\bin\mpiexec.exe"
-          if (-not (Test-Path $mpiexec)) { $mpiexec = "mpiexec" }
-
-          $out = & $mpiexec -np 2 .\OpenSeesSP.exe test_mumps.tcl 2>&1
+          $out = & "C:\Program Files (x86)\Intel\oneAPI\mpi\latest\bin\mpiexec.exe" -np 2 .\OpenSeesSP.exe test_mumps.tcl 2>&1
           $ec = $LASTEXITCODE
           Pop-Location
 
           Write-Host "Exit code: $ec"
-          Write-Host "Output:"
-          if ($out) { $out | ForEach-Object { Write-Host $_ } } else { Write-Host "(no output)" }
+          $out | ForEach-Object { Write-Host $_ }
 
           $outText = if ($out -is [array]) { $out -join "`n" } else { "$out" }
-
-          if ($ec -ne 0) {
-            Write-Host "❌ Sanity failed with exit code $ec" -ForegroundColor Red
+          if ($ec -ne 0 -or $outText -notmatch "MUMPS solver OK") {
             exit 1
           }
-          if ($outText -notmatch "MUMPS solver OK") {
-            Write-Host "❌ 'MUMPS solver OK' not found" -ForegroundColor Red
-            exit 1
-          }
-
-          Write-Host "✅ OpenSeesSP + Mumps verification PASSED" -ForegroundColor Green
+          Write-Host "PASSED"
 
       - name: Prepare artifacts
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts/release | Out-Null
           Copy-Item build/Release/OpenSeesSP.exe artifacts/release/
-
-          $dlls = @(
-            "build\Release\libiomp5md.dll",
-            "C:\Program Files (x86)\Intel\oneAPI\compiler\2024.1\bin\libiomp5md.dll",
-            "C:\Program Files (x86)\Intel\oneAPI\compiler\latest\bin\libiomp5md.dll"
-          )
-          foreach ($p in $dlls) {
-            if (Test-Path $p) {
-              Copy-Item $p artifacts/release/ -Force
-              break
-            }
+          if (Test-Path "build\Release\libiomp5md.dll") {
+            Copy-Item "build\Release\libiomp5md.dll" artifacts/release/
           }
 
       - name: Upload ZIP artifact
