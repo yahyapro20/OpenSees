@@ -10,7 +10,7 @@ jobs:
   build:
     name: OpenSees Serial Profiling (Windows)
     runs-on: windows-2022
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - name: Checkout OpenSees official source
@@ -42,7 +42,7 @@ jobs:
           del %TEMP%\webimage.exe
           webimage_extracted\bootstrapper.exe -s --action install --components=%COMPONENTS% --eula=accept -p=NEED_VS2017_INTEGRATION=0 -p=NEED_VS2019_INTEGRATION=1 -p=NEED_VS2022_INTEGRATION=0 --log-dir=.
           set installer_exit_code=%ERRORLEVEL%
-          rd /s/q "webimage_extracted"
+          rd /s /q "webimage_extracted"
           exit /b %installer_exit_code%
           "@
           $script | Out-File -Encoding ascii install_oneapi.bat
@@ -59,6 +59,10 @@ jobs:
           pip install conan
           conan profile detect --force
 
+      - name: Install Ninja
+        shell: cmd
+        run: where ninja || choco install ninja -y
+
       - name: Build MUMPS (needed by CMake even for serial)
         shell: cmd
         run: |
@@ -73,29 +77,30 @@ jobs:
       - name: Configure + Build OpenSees Profiling
         shell: cmd
         run: |
-         set CMAKE_POLICY_VERSION_MINIMUM=3.5
-         conan install . -s arch=x86_64 -s compiler.runtime=static --build=missing -c tools.cmake.cmaketoolchain:generator=Ninja -of build/Profiling
-         call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 mod
-         cd build\Profiling
-         cmake.exe -S ../.. -B . -G "Ninja" ^
-         -DCMAKE_TOOLCHAIN_FILE=generators/conan_toolchain.cmake ^
-         -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
-         -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" ^
-         -DCMAKE_Fortran_COMPILER="ifx" ^
-         -DBLA_STATIC=ON -DMKL_LINK=static -DMKL_INTERFACE_FULL=intel_lp64 ^
-         -DMUMPS_DIR="%CD%\..\..\..\mumps\build" ^
-         -DCMAKE_CXX_FLAGS="/bigobj /Zi /Od" ^
-         -DCMAKE_EXE_LINKER_FLAGS="/DEBUG /FORCE:MULTIPLE" ^
-         -DCMAKE_SHARED_LINKER_FLAGS="/DEBUG /FORCE:MULTIPLE" ^
-         -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
-         cmake --build . --config RelWithDebInfo --target OpenSees --parallel %NUMBER_OF_PROCESSORS%
+          set CMAKE_POLICY_VERSION_MINIMUM=3.5
+          conan install . -s arch=x86_64 -s compiler.runtime=static --build=missing -c tools.cmake.cmaketoolchain:generator=Ninja -of build/Profiling
+          call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 mod
+          cd build\Profiling
+          cmake.exe -S ../.. -B build/Release -G "Ninja" ^
+            -DCMAKE_TOOLCHAIN_FILE=generators/conan_toolchain.cmake ^
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
+            -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" ^
+            -DCMAKE_Fortran_COMPILER="ifx" ^
+            -DBLA_STATIC=ON -DMKL_LINK=static -DMKL_INTERFACE_FULL=intel_lp64 ^
+            -DMUMPS_DIR="%CD%\..\..\..\mumps\build" ^
+            -DCMAKE_CXX_FLAGS="/bigobj /Zi /Od" ^
+            -DCMAKE_EXE_LINKER_FLAGS="/DEBUG /FORCE:MULTIPLE" ^
+            -DCMAKE_SHARED_LINKER_FLAGS="/DEBUG /FORCE:MULTIPLE" ^
+            -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
+          cd build\Release
+          cmake --build . --config RelWithDebInfo --target OpenSees --parallel %NUMBER_OF_PROCESSORS%
 
       - name: Prepare artifacts
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts/profiling | Out-Null
-          Copy-Item build/Profiling/OpenSees.exe artifacts/profiling/
-          if (Test-Path "build/Profiling/OpenSees.pdb") { Copy-Item "build/Profiling/OpenSees.pdb" artifacts/profiling/ }
+          Copy-Item build/Profiling/build/Release/OpenSees.exe artifacts/profiling/
+          if (Test-Path "build/Profiling/build/Release/OpenSees.pdb") { Copy-Item "build/Profiling/build/Release/OpenSees.pdb" artifacts/profiling/ }
           # copy Intel OpenMP runtime if present
           $iomp = "C:\Program Files (x86)\Intel\oneAPI\compiler\2024.1\bin\libiomp5md.dll"
           if (Test-Path $iomp) { Copy-Item $iomp artifacts/profiling/ }
