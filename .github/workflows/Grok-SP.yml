@@ -93,10 +93,15 @@ jobs:
           if (Test-Path $file) {
             Write-Host "Patching $file ..."
             $content = Get-Content $file -Raw
-            # تبدیل Variable Length Array به std::vector (MSVC پشتیبانی نمی‌کند)
+
+            # 1. تبدیل VLA به std::vector
             $content = $content -replace 'int numvertex_proc\[nproc\];', 'std::vector<int> numvertex_proc(nproc);'
+
+            # 2. اصلاح آرگومان MPI_Allgather (باید .data() بدهیم)
+            $content = $content -replace 'MPI_Allgather\(\s*&numvertex\s*,\s*1\s*,\s*MPI_INT\s*,\s*numvertex_proc\s*,', 'MPI_Allgather(&numvertex, 1, MPI_INT, numvertex_proc.data(),'
+
             Set-Content -Path $file -Value $content -NoNewline
-            Write-Host "GmshRecorder.cpp patched"
+            Write-Host "GmshRecorder.cpp patched successfully"
           } else {
             Write-Host "WARNING: GmshRecorder.cpp not found"
           }
