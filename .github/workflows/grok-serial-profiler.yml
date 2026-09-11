@@ -88,9 +88,8 @@ jobs:
             -DCMAKE_Fortran_COMPILER="ifx" ^
             -DBLA_STATIC=ON -DMKL_LINK=static -DMKL_INTERFACE_FULL=intel_lp64 ^
             -DMUMPS_DIR="%CD%\..\..\..\mumps\build" ^
-            -DCMAKE_CXX_FLAGS="/bigobj /Zi /Od" ^
-            -DCMAKE_EXE_LINKER_FLAGS="/DEBUG /FORCE:MULTIPLE" ^
-            -DCMAKE_SHARED_LINKER_FLAGS="/DEBUG /FORCE:MULTIPLE" ^
+            -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="/Od /Zi /bigobj /DNDEBUG" ^
+            -DCMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO="/DEBUG /FORCE:MULTIPLE /INCREMENTAL:NO" ^
             -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
           cd build\Release
           cmake --build . --config RelWithDebInfo --target OpenSees --parallel %NUMBER_OF_PROCESSORS%
