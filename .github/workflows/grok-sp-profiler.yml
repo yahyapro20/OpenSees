@@ -13,26 +13,26 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      # ---------------------------------------------------------
+      # =========================================================
       # 1. Source
-      # ---------------------------------------------------------
+      # =========================================================
       - name: Checkout OpenSees official source
         uses: actions/checkout@v4
         with:
           repository: OpenSees/OpenSees
           fetch-depth: 0
 
-      # ---------------------------------------------------------
+      # =========================================================
       # 2. MSVC 2022
-      # ---------------------------------------------------------
+      # =========================================================
       - name: Setup MSVC 2022
         uses: ilammy/msvc-dev-cmd@v1
         with:
           vsversion: 2022
 
-      # ---------------------------------------------------------
+      # =========================================================
       # 3. Intel oneAPI (MKL + MPI + ifx)
-      # ---------------------------------------------------------
+      # =========================================================
       - name: Install Intel oneAPI (MKL + Fortran/ifx + MPI)
         shell: pwsh
         env:
@@ -57,9 +57,22 @@ jobs:
           cmd /c "install_oneapi.bat $env:WINDOWS_BASEKIT_URL $env:WINDOWS_BASEKIT_COMPONENTS"
           cmd /c "install_oneapi.bat $env:WINDOWS_HPCKIT_URL $env:WINDOWS_HPCKIT_COMPONENTS"
 
-      # ---------------------------------------------------------
-      # 4. Python + Conan
-      # ---------------------------------------------------------
+      # =========================================================
+      # 4. VTune availability check (part of oneAPI Base Toolkit)
+      # =========================================================
+      - name: Check Intel VTune availability
+        shell: pwsh
+        run: |
+          $vtune = "C:\Program Files (x86)\Intel\oneAPI\vtune\latest\bin64\vtune.exe"
+          if (Test-Path $vtune) {
+            Write-Host "VTune found at: $vtune"
+          } else {
+            Write-Host "WARNING: VTune not found. Profiling step will be skipped."
+          }
+
+      # =========================================================
+      # 5. Python + Conan
+      # =========================================================
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
@@ -70,9 +83,9 @@ jobs:
           pip install conan
           conan profile detect --force
 
-      # ---------------------------------------------------------
-      # 5. MUMPS parallel
-      # ---------------------------------------------------------
+      # =========================================================
+      # 6. MUMPS parallel
+      # =========================================================
       - name: Build MUMPS (Parallel)
         shell: cmd
         run: |
@@ -87,9 +100,9 @@ jobs:
           cd build
           cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS%
 
-      # ---------------------------------------------------------
-      # 6. Patches
-      # ---------------------------------------------------------
+      # =========================================================
+      # 7. Patch: DistributedSuperLU — resolve `stat` symbol clash
+      # =========================================================
       - name: Patch DistributedSuperLU (stat conflict)
         shell: pwsh
         run: |
@@ -106,6 +119,9 @@ jobs:
             Write-Host "DistributedSuperLU.cpp patched"
           }
 
+      # =========================================================
+      # 8. Patch: GmshRecorder — VLA → std::vector (MSVC has no VLA)
+      # =========================================================
       - name: Patch GmshRecorder.cpp (VLA → std::vector for MSVC)
         shell: pwsh
         run: |
@@ -121,24 +137,54 @@ jobs:
             Write-Host "WARNING: GmshRecorder.cpp not found"
           }
 
-      # ---------------------------------------------------------
-      # 6b. Debug: inspect what MUMPS build actually produced
-      # ---------------------------------------------------------
-      - name: Debug MUMPS output layout
+      # =========================================================
+      # 9. Patch: `theDomain` type for OpenSeesSP
+      #    In the SP (parallel) build, `theDomain` is a
+      #    PartitionedDomain (subclass of Domain). Two files
+      #    still declare `extern Domain theDomain;`, which causes
+      #    LNK2001 unresolved external symbol at final link stage.
+      # =========================================================
+      - name: Patch theDomain type for OpenSeesSP
         shell: pwsh
         run: |
-          Write-Host "=== Top of mumps/build ==="
-          Get-ChildItem "mumps/build" -ErrorAction SilentlyContinue | Select-Object Name, Mode | Format-Table
+          $files = @(
+            "SRC/modelbuilder/tcl/myCommands.cpp",
+            "SRC/element/UWelements/Tcl_generateInterfacePoints.cpp"
+          )
+          foreach ($file in $files) {
+            if (-not (Test-Path $file)) {
+              Write-Host "WARNING: $file not found - skipping"
+              continue
+            }
+            Write-Host "Patching $file ..."
+            $content  = Get-Content $file -Raw
+            $original = $content
 
-          Write-Host ""
-          Write-Host "=== Search for dmumps/mumps_common/pord libs ==="
-          Get-ChildItem "mumps/build" -Recurse -Include "dmumps*.lib","mumps_common*.lib","pord*.lib" -ErrorAction SilentlyContinue |
-            Select-Object FullName | Format-Table -AutoSize
+            # Make sure PartitionedDomain.h is available
+            if ($content -notmatch 'PartitionedDomain\.h') {
+              if ($content -match '(#include\s*[<"]Domain\.h[>"]\s*\r?\n)') {
+                $content = $content -replace '(#include\s*[<"]Domain\.h[>"]\s*\r?\n)', "`$1#include <PartitionedDomain.h>`r`n"
+              } else {
+                $content = "#include <PartitionedDomain.h>`r`n" + $content
+              }
+            }
 
-      # ---------------------------------------------------------
-      # 7. Configure + Build OpenSeesSP (profiling flags)
-      #    Same path pattern as grok-serial / grok-sp
-      # ---------------------------------------------------------
+            # Change `extern Domain theDomain;` -> `extern PartitionedDomain theDomain;`
+            $content = $content -replace 'extern\s+Domain\s+theDomain\s*;', 'extern PartitionedDomain theDomain;'
+
+            if ($content -eq $original) {
+              Write-Host "  (no change applied)"
+            } else {
+              Set-Content -Path $file -Value $content -NoNewline
+              Write-Host "  patched."
+            }
+          }
+
+      # =========================================================
+      # 10. Configure + Build OpenSeesSP (profiling build)
+      #     Layout: build/Profiling   (1 level, matches grok-serial / grok-sp)
+      #     Flags  : /Zi /Od  → line-accurate profiling
+      # =========================================================
       - name: Configure + Build OpenSeesSP (profiling)
         shell: cmd
         run: |
@@ -159,9 +205,9 @@ jobs:
           cd build\Profiling
           cmake --build . --config Release --target OpenSeesSP --parallel %NUMBER_OF_PROCESSORS%
 
-      # ---------------------------------------------------------
-      # 8. Sanity check
-      # ---------------------------------------------------------
+      # =========================================================
+      # 11. Sanity check (exe + pdb + MKL marker)
+      # =========================================================
       - name: Sanity check
         shell: pwsh
         run: |
@@ -182,18 +228,73 @@ jobs:
             exit 1
           }
 
-      # ---------------------------------------------------------
-      # 9. Generate README for artifact
-      # ---------------------------------------------------------
+      # =========================================================
+      # 12. VTune profiling (MPI-aware, 2 ranks)
+      # =========================================================
+      - name: Profile OpenSeesSP with VTune
+        shell: pwsh
+        run: |
+          $vtuneDir = "C:\Program Files (x86)\Intel\oneAPI\vtune\latest\bin64"
+          $vtune    = Join-Path $vtuneDir "vtune.exe"
+          if (-not (Test-Path $vtune)) {
+            Write-Host "VTune not found. Skipping profiling."
+            exit 0
+          }
+
+          $mpiBin  = "C:\Program Files (x86)\Intel\oneAPI\mpi\latest\bin"
+          $mpiexec = Join-Path $mpiBin "mpiexec.exe"
+
+          # Force Intel MPI to use shared memory (no RDMA on CI runners)
+          $env:I_MPI_FABRICS       = "shm"
+          $env:I_MPI_OFI_PROVIDER  = "sockets"
+          $env:PATH = "$vtuneDir;$mpiBin;$env:PATH"
+
+          # Simple test model
+          $testTcl = @"
+          puts "OpenSeesSP profiling test running..."
+          model BasicBuilder -ndm 2 -ndf 3
+          node 1 0.0 0.0
+          node 2 1.0 0.0
+          fix 1 1 1 1
+          fix 2 1 1 1
+          puts "Model created. Exiting."
+          exit
+          "@
+          $testTcl | Out-File -Encoding ascii "build\Profiling\profile_test.tcl"
+
+          $resultDir = "vtune_results"
+          if (Test-Path "build\Profiling\$resultDir") {
+            Remove-Item -Recurse -Force "build\Profiling\$resultDir"
+          }
+
+          Write-Host "Launching VTune profiling with 2 MPI ranks..."
+          Push-Location "build\Profiling"
+          & $mpiexec -np 2 -genvall `
+            "$vtune" -collect hotspots -trace-mpi -result-dir "$resultDir" -quiet `
+            -- .\OpenSeesSP.exe profile_test.tcl
+          $ec = $LASTEXITCODE
+          Pop-Location
+
+          if ($ec -ne 0) {
+            Write-Host "VTune profiling exited with code $ec (non-fatal)"
+          } else {
+            Write-Host "VTune profiling completed. Results in: build/Profiling/$resultDir"
+          }
+
+      # =========================================================
+      # 13. Generate README for the artifact
+      # =========================================================
       - name: Generate README
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts/profiling | Out-Null
+
           $hasExe   = Test-Path "build/Profiling/OpenSeesSP.exe"
           $hasPdb   = Test-Path "build/Profiling/OpenSeesSP.pdb"
+          $hasVtune = Test-Path "build/Profiling/vtune_results"
           $exeSize  = if ($hasExe) { [math]::Round((Get-Item "build/Profiling/OpenSeesSP.exe").Length / 1MB, 2) } else { "N/A" }
           $buildDate = (Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
-          $gitSha = (git rev-parse HEAD).Trim().Substring(0,7)
+          $gitSha    = (git rev-parse HEAD).Trim().Substring(0,7)
 
           $readme = @"
           ================================================================
@@ -213,8 +314,9 @@ jobs:
 
           Contents
           --------
-          $(if ($hasExe) { "  [X] OpenSeesSP.exe       Parallel OpenSees executable" } else { "  [ ] OpenSeesSP.exe       (missing!)" })
-          $(if ($hasPdb) { "  [X] OpenSeesSP.pdb       Debug symbols (needed by profiler)" } else { "  [ ] OpenSeesSP.pdb       (not built)" })
+          $(if ($hasExe)   { "  [X] OpenSeesSP.exe       Parallel OpenSees executable" } else { "  [ ] OpenSeesSP.exe       (missing!)" })
+          $(if ($hasPdb)   { "  [X] OpenSeesSP.pdb       Debug symbols (needed by profiler)" } else { "  [ ] OpenSeesSP.pdb       (not built)" })
+          $(if ($hasVtune) { "  [X] vtune_results/       VTune profiling output (per-rank)" } else { "  [ ] vtune_results/       (no profiling data)" })
           "  [X] README.txt           This file"
 
           Prerequisites (REQUIRED on target machine)
@@ -264,22 +366,33 @@ jobs:
           Set-Content -Path "artifacts/profiling/README.txt" -Value $readme -Encoding UTF8
           Write-Host "README.txt generated."
 
-      # ---------------------------------------------------------
-      # 10. Collect artifacts
-      # ---------------------------------------------------------
+      # =========================================================
+      # 14. Collect artifacts
+      # =========================================================
       - name: Prepare artifacts
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts/profiling | Out-Null
+
           Copy-Item "build/Profiling/OpenSeesSP.exe" artifacts/profiling/
           if (Test-Path "build/Profiling/OpenSeesSP.pdb") {
             Copy-Item "build/Profiling/OpenSeesSP.pdb" artifacts/profiling/
           }
+          if (Test-Path "build/Profiling/vtune_results") {
+            Copy-Item -Recurse "build/Profiling/vtune_results" artifacts/profiling/
+          }
+          if (Test-Path "build/Profiling/profile_test.tcl") {
+            Copy-Item "build/Profiling/profile_test.tcl" artifacts/profiling/
+          }
+
           Write-Host "=== Artifact contents ==="
           Get-ChildItem artifacts/profiling -Recurse | ForEach-Object {
             Write-Host "  $($_.FullName.Replace($PWD.Path + '\', ''))"
           }
 
+      # =========================================================
+      # 15. Upload
+      # =========================================================
       - name: Upload ZIP artifact
         uses: actions/upload-artifact@v4
         with:
