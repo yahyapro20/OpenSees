@@ -69,7 +69,7 @@ jobs:
           cd build
           cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS%
 
-      # ---------- RELEASE (optimized with AVX2) ----------
+      # ---------- RELEASE (optimized) ----------
       - name: Configure + Build OpenSees Release
         shell: cmd
         run: |
@@ -83,25 +83,21 @@ jobs:
             -DCMAKE_Fortran_COMPILER="ifx" ^
             -DBLA_STATIC=ON -DMKL_LINK=static -DMKL_INTERFACE_FULL=intel_lp64 ^
             -DMUMPS_DIR="..\..\mumps\build" ^
-            -DCMAKE_C_FLAGS_RELEASE="/O2 /DNDEBUG /arch:AVX2 /fp:precise" ^
-            -DCMAKE_CXX_FLAGS_RELEASE="/O2 /DNDEBUG /arch:AVX2 /fp:precise /bigobj" ^
-            -DCMAKE_EXE_LINKER_FLAGS="/FORCE:MULTIPLE" ^
-            -DCMAKE_SHARED_LINKER_FLAGS="/FORCE:MULTIPLE" ^
-            -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON ^
-            > cmake_configure.log 2>&1
-          type cmake_configure.log
+            -DCMAKE_CXX_FLAGS_RELEASE="/O2 /arch:AVX2 /GL /DNDEBUG" ^
+            -DCMAKE_C_FLAGS_RELEASE="/O2 /arch:AVX2 /GL /DNDEBUG" ^
+            -DCMAKE_Fortran_FLAGS_RELEASE="/O2 /arch:AVX2 /DNDEBUG" ^
+            -DCMAKE_EXE_LINKER_FLAGS="/FORCE:MULTIPLE /LTCG" ^
+            -DCMAKE_SHARED_LINKER_FLAGS="/FORCE:MULTIPLE /LTCG" ^
+            -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
           cd build/Release
           cmake --build . --config Release --target OpenSees --parallel %NUMBER_OF_PROCESSORS%
 
-      # ---------- MKL LINKAGE VERIFICATION ----------
-      - name: Verify MKL was actually linked (not Netlib fallback)
+      - name: Verify MKL + Sanity
         shell: pwsh
         run: |
           Write-Host "=== 1. Checking CMake configure log ===" -ForegroundColor Cyan
           $logPath = "build/Release/../cmake_configure.log"
-          if (-not (Test-Path $logPath)) {
-            $logPath = "cmake_configure.log"
-          }
+          if (-not (Test-Path $logPath)) { $logPath = "cmake_configure.log" }
 
           if (Test-Path $logPath) {
             $log = Get-Content $logPath -Raw
@@ -154,28 +150,65 @@ jobs:
 
           Write-Host ""
           Write-Host "=== 3. Sanity run ===" -ForegroundColor Cyan
-          echo 'puts "OpenSees serial OK"; exit' | .\build\Release\OpenSees.exe
 
-          Write-Host ""
-          Write-Host "✅ MKL verification PASSED" -ForegroundColor Green
+          # Copy required Intel OpenMP runtime next to the exe
+          $iompCandidates = @(
+            "C:\Program Files (x86)\Intel\oneAPI\compiler\2024.1\bin\libiomp5md.dll",
+            "C:\Program Files (x86)\Intel\oneAPI\compiler\latest\bin\libiomp5md.dll"
+          )
+          $copied = $false
+          foreach ($p in $iompCandidates) {
+            if (Test-Path $p) {
+              Copy-Item $p "build\Release\" -Force
+              Write-Host "Copied libiomp5md.dll from: $p"
+              $copied = $true
+              break
+            }
+          }
+          if (-not $copied) {
+            Write-Host "⚠️ libiomp5md.dll not found in expected locations" -ForegroundColor Yellow
+          }
+
+          # Run sanity test and capture exit code + output
+          Push-Location build\Release
+          $out = cmd /c "echo puts {OpenSees serial OK}; exit | OpenSees.exe 2>&1"
+          $ec = $LASTEXITCODE
+          Pop-Location
+
+          Write-Host "Exit code: $ec"
+          Write-Host "Output:"
+          if ($out) { $out | ForEach-Object { Write-Host $_ } } else { Write-Host "(no output)" }
+
+          if ($ec -ne 0) {
+            Write-Host "❌ Sanity run failed with exit code $ec" -ForegroundColor Red
+            exit 1
+          }
+          if ($out -notmatch "OpenSees serial OK") {
+            Write-Host "❌ Expected message 'OpenSees serial OK' not found in output" -ForegroundColor Red
+            exit 1
+          }
+
+          Write-Host "✅ MKL verification + Sanity PASSED" -ForegroundColor Green
 
       - name: Prepare artifacts
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts/release | Out-Null
           Copy-Item build/Release/OpenSees.exe artifacts/release/
-          if (Test-Path "build/Release/OpenSees.pdb") { Copy-Item "build/Release/OpenSees.pdb" artifacts/release/ }
 
-          # copy Intel OpenMP runtime if present
-          $iomp = "C:\Program Files (x86)\Intel\oneAPI\compiler\2024.1\bin\libiomp5md.dll"
-          if (Test-Path $iomp) { Copy-Item $iomp artifacts/release/ }
-
-          # copy CMake configure log for reference
-          $cmakeLog = "cmake_configure.log"
-          if (Test-Path $cmakeLog) { Copy-Item $cmakeLog artifacts/release/ }
-
-          # quick sanity
-          echo 'puts "OpenSees serial OK"; exit' | .\artifacts\release\OpenSees.exe
+          # copy runtime if present
+          $iompCandidates = @(
+            "build\Release\libiomp5md.dll",
+            "C:\Program Files (x86)\Intel\oneAPI\compiler\2024.1\bin\libiomp5md.dll",
+            "C:\Program Files (x86)\Intel\oneAPI\compiler\latest\bin\libiomp5md.dll"
+          )
+          foreach ($p in $iompCandidates) {
+            if (Test-Path $p) {
+              Copy-Item $p artifacts/release/ -Force
+              Write-Host "Copied runtime: $p"
+              break
+            }
+          }
 
       - name: Upload ZIP artifact
         uses: actions/upload-artifact@v4
