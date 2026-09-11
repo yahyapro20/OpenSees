@@ -69,6 +69,7 @@ jobs:
           cd build
           cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS%
 
+      # ---------- Patches ----------
       - name: Patch DistributedSuperLU (stat conflict)
         shell: pwsh
         run: |
@@ -82,9 +83,25 @@ jobs:
             $content = $content -replace '\bstat,', 'superlu_stat,'
             $content = $content -replace '\(stat\)', '(superlu_stat)'
             Set-Content -Path $file -Value $content -NoNewline
-            Write-Host "Patched successfully"
+            Write-Host "DistributedSuperLU.cpp patched"
           }
 
+      - name: Patch GmshRecorder.cpp (VLA → std::vector for MSVC)
+        shell: pwsh
+        run: |
+          $file = "SRC/recorder/GmshRecorder.cpp"
+          if (Test-Path $file) {
+            Write-Host "Patching $file ..."
+            $content = Get-Content $file -Raw
+            # تبدیل Variable Length Array به std::vector (MSVC پشتیبانی نمی‌کند)
+            $content = $content -replace 'int numvertex_proc\[nproc\];', 'std::vector<int> numvertex_proc(nproc);'
+            Set-Content -Path $file -Value $content -NoNewline
+            Write-Host "GmshRecorder.cpp patched"
+          } else {
+            Write-Host "WARNING: GmshRecorder.cpp not found"
+          }
+
+      # ---------- Configure + Build ----------
       - name: Configure + Build OpenSeesSP
         shell: cmd
         run: |
