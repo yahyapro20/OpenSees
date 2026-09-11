@@ -73,7 +73,7 @@ jobs:
           cd build
           cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS%
 
-      # ---------- PROFILING (line-accurate) ----------
+  # ---------- PROFILING (line-accurate) ----------
       - name: Configure + Build OpenSees Profiling
         shell: cmd
         run: |
@@ -82,17 +82,18 @@ jobs:
           call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 mod
           cd build\Profiling
           cmake.exe -S ../.. -B build/Release -G "Ninja" ^
-            -DCMAKE_TOOLCHAIN_FILE=generators/conan_toolchain.cmake ^
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
-            -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" ^
-            -DCMAKE_Fortran_COMPILER="ifx" ^
-            -DBLA_STATIC=ON -DMKL_LINK=static -DMKL_INTERFACE_FULL=intel_lp64 ^
-            -DMUMPS_DIR="%CD%\..\..\..\mumps\build" ^
-            -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="/Od /Zi /bigobj /DNDEBUG" ^
-            -DCMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO="/DEBUG /FORCE:MULTIPLE /INCREMENTAL:NO" ^
-            -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
+          -DCMAKE_TOOLCHAIN_FILE=generators/conan_toolchain.cmake ^
+          -DCMAKE_BUILD_TYPE=Release ^
+          -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" ^
+          -DCMAKE_Fortran_COMPILER="ifx" ^
+          -DBLA_STATIC=ON -DMKL_LINK=static -DMKL_INTERFACE_FULL=intel_lp64 ^
+          -DMUMPS_DIR="%CD%\..\..\..\mumps\build" ^
+          -DCMAKE_CXX_FLAGS_RELEASE="/Zi /Od /bigobj /DNDEBUG" ^
+          -DCMAKE_C_FLAGS_RELEASE="/Zi /Od /DNDEBUG" ^
+          -DCMAKE_EXE_LINKER_FLAGS="/DEBUG /FORCE:MULTIPLE" ^
+          -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
           cd build\Release
-          cmake --build . --config RelWithDebInfo --target OpenSees --parallel %NUMBER_OF_PROCESSORS%
+          cmake --build . --config Release --target OpenSees --parallel %NUMBER_OF_PROCESSORS%
 
       - name: Prepare artifacts
         shell: pwsh
