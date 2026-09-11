@@ -69,7 +69,7 @@ jobs:
           cd build
           cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS%
 
-      # ---------- RELEASE (optimized) ----------
+      # ---------- RELEASE (optimized with AVX2) ----------
       - name: Configure + Build OpenSees Release
         shell: cmd
         run: |
@@ -83,20 +83,96 @@ jobs:
             -DCMAKE_Fortran_COMPILER="ifx" ^
             -DBLA_STATIC=ON -DMKL_LINK=static -DMKL_INTERFACE_FULL=intel_lp64 ^
             -DMUMPS_DIR="..\..\mumps\build" ^
+            -DCMAKE_C_FLAGS_RELEASE="/O2 /DNDEBUG /arch:AVX2 /fp:precise" ^
+            -DCMAKE_CXX_FLAGS_RELEASE="/O2 /DNDEBUG /arch:AVX2 /fp:precise /bigobj" ^
             -DCMAKE_EXE_LINKER_FLAGS="/FORCE:MULTIPLE" ^
             -DCMAKE_SHARED_LINKER_FLAGS="/FORCE:MULTIPLE" ^
-            -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
+            -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON ^
+            > cmake_configure.log 2>&1
+          type cmake_configure.log
           cd build/Release
           cmake --build . --config Release --target OpenSees --parallel %NUMBER_OF_PROCESSORS%
+
+      # ---------- MKL LINKAGE VERIFICATION ----------
+      - name: Verify MKL was actually linked (not Netlib fallback)
+        shell: pwsh
+        run: |
+          Write-Host "=== 1. Checking CMake configure log ===" -ForegroundColor Cyan
+          $logPath = "build/Release/../cmake_configure.log"
+          if (-not (Test-Path $logPath)) {
+            $logPath = "cmake_configure.log"
+          }
+
+          if (Test-Path $logPath) {
+            $log = Get-Content $logPath -Raw
+            $mklLines = $log -split "`n" | Where-Object { $_ -match "MKL|oneAPI|Intel" }
+            Write-Host "--- Lines mentioning MKL/Intel in CMake log ---"
+            $mklLines | ForEach-Object { Write-Host "   $_" }
+
+            $foundInLog = $false
+            foreach ($pattern in @("oneAPI\\mkl", "oneAPI/mkl", "mkl_intel_lp64", "mkl_core")) {
+              if ($log -match $pattern) {
+                Write-Host "✅ CMake configure log confirms MKL path: $pattern" -ForegroundColor Green
+                $foundInLog = $true
+                break
+              }
+            }
+            if (-not $foundInLog) {
+              Write-Host "❌ No MKL path found in CMake log - possible fallback!" -ForegroundColor Red
+            }
+          } else {
+            Write-Host "⚠️ CMake log file not found, skipping log check" -ForegroundColor Yellow
+          }
+
+          Write-Host ""
+          Write-Host "=== 2. Checking binary for MKL strings ===" -ForegroundColor Cyan
+          $exePath = "build/Release/OpenSees.exe"
+          if (-not (Test-Path $exePath)) {
+            Write-Host "❌ OpenSees.exe not found at $exePath" -ForegroundColor Red
+            exit 1
+          }
+          $sizeMB = [math]::Round((Get-Item $exePath).Length / 1MB, 2)
+          Write-Host "OpenSees.exe size: $sizeMB MB"
+
+          # Latin1 encoding maps every byte 1:1 to a char (never fails on binary)
+          $content = [System.IO.File]::ReadAllText($exePath, [System.Text.Encoding]::GetEncoding(28591))
+
+          if ($content.Contains("Math Kernel Library")) {
+            Write-Host "✅ 'Math Kernel Library' string FOUND in binary" -ForegroundColor Green
+            $idx = $content.IndexOf("Intel(R) Math Kernel Library")
+            if ($idx -lt 0) { $idx = $content.IndexOf("Math Kernel Library") }
+            if ($idx -ge 0) {
+              $snippet = $content.Substring($idx, [Math]::Min(120, $content.Length - $idx))
+              $snippet = ($snippet -replace '[^\x20-\x7E]', ' ').Trim()
+              Write-Host "   Version info: $snippet"
+            }
+          } else {
+            Write-Host "❌ 'Math Kernel Library' NOT found - Fallback to Netlib!" -ForegroundColor Red
+            Write-Host "   This means OpenSees will run 10-100x slower." -ForegroundColor Red
+            exit 1
+          }
+
+          Write-Host ""
+          Write-Host "=== 3. Sanity run ===" -ForegroundColor Cyan
+          echo 'puts "OpenSees serial OK"; exit' | .\build\Release\OpenSees.exe
+
+          Write-Host ""
+          Write-Host "✅ MKL verification PASSED" -ForegroundColor Green
 
       - name: Prepare artifacts
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts/release | Out-Null
           Copy-Item build/Release/OpenSees.exe artifacts/release/
-          # copy runtime if present
+          if (Test-Path "build/Release/OpenSees.pdb") { Copy-Item "build/Release/OpenSees.pdb" artifacts/release/ }
+
+          # copy Intel OpenMP runtime if present
           $iomp = "C:\Program Files (x86)\Intel\oneAPI\compiler\2024.1\bin\libiomp5md.dll"
           if (Test-Path $iomp) { Copy-Item $iomp artifacts/release/ }
+
+          # copy CMake configure log for reference
+          $cmakeLog = "cmake_configure.log"
+          if (Test-Path $cmakeLog) { Copy-Item $cmakeLog artifacts/release/ }
 
           # quick sanity
           echo 'puts "OpenSees serial OK"; exit' | .\artifacts\release\OpenSees.exe
