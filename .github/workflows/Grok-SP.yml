@@ -2,9 +2,6 @@ name: grok-sp
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - '.github/workflows/grok-sp.yml'
 
 jobs:
   build:
@@ -72,28 +69,46 @@ jobs:
           cd build
           cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS%
 
-      - name: Patch DistributedSuperLU for Windows (stat conflict)
+      # ---------- Patches for Windows OpenSeesSP ----------
+      - name: Patch DistributedSuperLU (stat conflict)
         shell: pwsh
         run: |
           $file = "SRC/system_of_eqn/linearSOE/sparseGEN/DistributedSuperLU.cpp"
           if (Test-Path $file) {
-            Write-Host "Patching $file ..."
+            Write-Host "Patching $file for stat conflict..."
             $content = Get-Content $file -Raw
-
-            # تغییر نام متغیر stat به superlu_stat برای جلوگیری از تداخل با ویندوز
             $content = $content -replace 'SuperLUStat_t\s+stat\s*;', 'SuperLUStat_t superlu_stat;'
             $content = $content -replace '&stat\b', '&superlu_stat'
             $content = $content -replace '\bstat\.', 'superlu_stat.'
             $content = $content -replace '\bstat,', 'superlu_stat,'
             $content = $content -replace '\(stat\)', '(superlu_stat)'
-
             Set-Content -Path $file -Value $content -NoNewline
-            Write-Host "Patch applied successfully"
+            Write-Host "DistributedSuperLU.cpp patched"
           } else {
             Write-Host "WARNING: DistributedSuperLU.cpp not found"
           }
 
-      # ---------- RELEASE OpenSeesSP only ----------
+      - name: Patch Domain → PartitionedDomain (linking fix)
+        shell: pwsh
+        run: |
+          $files = @(
+            "SRC/tcl/myCommands.cpp",
+            "SRC/tcl/commands.cpp",
+            "SRC/tcl/tclMain.cpp",
+            "SRC/tcl/mpiMain.cpp"
+          )
+          foreach ($f in $files) {
+            if (Test-Path $f) {
+              Write-Host "Patching $f ..."
+              $content = Get-Content $f -Raw
+              $content = $content -replace 'extern\s+Domain\s+theDomain\s*;', 'extern PartitionedDomain theDomain;'
+              $content = $content -replace 'Domain\s+theDomain\s*;', 'PartitionedDomain theDomain;'
+              Set-Content -Path $f -Value $content -NoNewline
+              Write-Host "  → $f patched"
+            }
+          }
+
+      # ---------- Configure + Build OpenSeesSP only ----------
       - name: Configure + Build OpenSeesSP
         shell: cmd
         run: |
@@ -101,46 +116,38 @@ jobs:
           conan install . -s arch=x86_64 -s compiler.runtime=static --build=missing -c tools.cmake.cmaketoolchain:generator=Ninja -of build/Release
           call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 mod
           cmake.exe -S . -B build/Release -G "Ninja" ^
-          -DCMAKE_TOOLCHAIN_FILE=build/Release/generators/conan_toolchain.cmake ^
-          -DCMAKE_BUILD_TYPE=Release ^
-          -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" ^
-          -DCMAKE_Fortran_COMPILER="ifx" ^
-          -DBLA_STATIC=ON -DMKL_LINK=static -DMKL_INTERFACE_FULL=intel_lp64 ^
-          -DMUMPS_DIR="..\..\mumps\build" ^
-          -DCMAKE_CXX_FLAGS_RELEASE="/O2 /arch:AVX2 /GL /DNDEBUG /D_PARALLEL_PROCESSING" ^
-          -DCMAKE_C_FLAGS_RELEASE="/O2 /arch:AVX2 /GL /DNDEBUG /D_PARALLEL_PROCESSING" ^
-          -DCMAKE_Fortran_FLAGS_RELEASE="/O2 /arch:AVX2 /DNDEBUG" ^
-          -DCMAKE_EXE_LINKER_FLAGS="/FORCE:MULTIPLE /LTCG" ^
-          -DCMAKE_SHARED_LINKER_FLAGS="/FORCE:MULTIPLE /LTCG" ^
-          -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
+            -DCMAKE_TOOLCHAIN_FILE=build/Release/generators/conan_toolchain.cmake ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" ^
+            -DCMAKE_Fortran_COMPILER="ifx" ^
+            -DBLA_STATIC=ON -DMKL_LINK=static -DMKL_INTERFACE_FULL=intel_lp64 ^
+            -DMUMPS_DIR="..\..\mumps\build" ^
+            -DCMAKE_CXX_FLAGS_RELEASE="/O2 /arch:AVX2 /GL /DNDEBUG" ^
+            -DCMAKE_C_FLAGS_RELEASE="/O2 /arch:AVX2 /GL /DNDEBUG" ^
+            -DCMAKE_Fortran_FLAGS_RELEASE="/O2 /arch:AVX2 /DNDEBUG" ^
+            -DCMAKE_EXE_LINKER_FLAGS="/FORCE:MULTIPLE /LTCG" ^
+            -DCMAKE_SHARED_LINKER_FLAGS="/FORCE:MULTIPLE /LTCG" ^
+            -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
           cd build/Release
           cmake --build . --config Release --target OpenSeesSP --parallel %NUMBER_OF_PROCESSORS%
 
-      - name: Verify MKL + Sanity (OpenSeesSP)
+      - name: Verify MKL + Sanity (OpenSeesSP + Mumps)
         shell: pwsh
         run: |
-          Write-Host "=== 1. Checking binary for MKL strings ===" -ForegroundColor Cyan
+          Write-Host "=== 1. Checking binary ===" -ForegroundColor Cyan
           $exePath = "build/Release/OpenSeesSP.exe"
           if (-not (Test-Path $exePath)) {
-            Write-Host "❌ OpenSeesSP.exe not found at $exePath" -ForegroundColor Red
+            Write-Host "❌ OpenSeesSP.exe not found" -ForegroundColor Red
             exit 1
           }
           $sizeMB = [math]::Round((Get-Item $exePath).Length / 1MB, 2)
           Write-Host "OpenSeesSP.exe size: $sizeMB MB"
 
           $content = [System.IO.File]::ReadAllText($exePath, [System.Text.Encoding]::GetEncoding(28591))
-
           if ($content.Contains("Math Kernel Library")) {
-            Write-Host "✅ 'Math Kernel Library' string FOUND in binary" -ForegroundColor Green
-            $idx = $content.IndexOf("Intel(R) Math Kernel Library")
-            if ($idx -lt 0) { $idx = $content.IndexOf("Math Kernel Library") }
-            if ($idx -ge 0) {
-              $snippet = $content.Substring($idx, [Math]::Min(120, $content.Length - $idx))
-              $snippet = ($snippet -replace '[^\x20-\x7E]', ' ').Trim()
-              Write-Host "   Version info: $snippet"
-            }
+            Write-Host "✅ MKL found in binary" -ForegroundColor Green
           } else {
-            Write-Host "❌ 'Math Kernel Library' NOT found - Fallback to Netlib!" -ForegroundColor Red
+            Write-Host "❌ MKL NOT found - Fallback!" -ForegroundColor Red
             exit 1
           }
 
@@ -153,15 +160,14 @@ jobs:
           foreach ($p in $iompCandidates) {
             if (Test-Path $p) {
               Copy-Item $p "build\Release\" -Force
-              Write-Host "Copied libiomp5md.dll from: $p"
+              Write-Host "Copied libiomp5md.dll"
               break
             }
           }
 
           Write-Host ""
-          Write-Host "=== 3. Sanity run with Mumps (mpiexec -np 2) ===" -ForegroundColor Cyan
+          Write-Host "=== 3. Sanity run (mpiexec -np 2 + system Mumps) ===" -ForegroundColor Cyan
 
-          # Create a simple test script that forces Mumps solver
           $testTcl = @"
           system Mumps
           puts {MUMPS solver OK}
@@ -170,12 +176,8 @@ jobs:
           $testTcl | Out-File -Encoding ascii -FilePath "build\Release\test_mumps.tcl"
 
           Push-Location build\Release
-
-          # Use Intel MPI mpiexec
           $mpiexec = "C:\Program Files (x86)\Intel\oneAPI\mpi\latest\bin\mpiexec.exe"
-          if (-not (Test-Path $mpiexec)) {
-            $mpiexec = "mpiexec"
-          }
+          if (-not (Test-Path $mpiexec)) { $mpiexec = "mpiexec" }
 
           $out = & $mpiexec -np 2 .\OpenSeesSP.exe test_mumps.tcl 2>&1
           $ec = $LASTEXITCODE
@@ -188,11 +190,11 @@ jobs:
           $outText = if ($out -is [array]) { $out -join "`n" } else { "$out" }
 
           if ($ec -ne 0) {
-            Write-Host "❌ Sanity run failed with exit code $ec" -ForegroundColor Red
+            Write-Host "❌ Sanity failed with exit code $ec" -ForegroundColor Red
             exit 1
           }
           if ($outText -notmatch "MUMPS solver OK") {
-            Write-Host "❌ Expected message 'MUMPS solver OK' not found in output" -ForegroundColor Red
+            Write-Host "❌ 'MUMPS solver OK' not found" -ForegroundColor Red
             exit 1
           }
 
@@ -204,7 +206,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path artifacts/release | Out-Null
           Copy-Item build/Release/OpenSeesSP.exe artifacts/release/
 
-          # Copy runtime DLLs
           $dlls = @(
             "build\Release\libiomp5md.dll",
             "C:\Program Files (x86)\Intel\oneAPI\compiler\2024.1\bin\libiomp5md.dll",
@@ -213,7 +214,6 @@ jobs:
           foreach ($p in $dlls) {
             if (Test-Path $p) {
               Copy-Item $p artifacts/release/ -Force
-              Write-Host "Copied: $p"
               break
             }
           }
