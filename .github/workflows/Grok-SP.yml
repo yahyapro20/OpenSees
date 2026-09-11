@@ -72,6 +72,27 @@ jobs:
           cd build
           cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS%
 
+      - name: Patch DistributedSuperLU for Windows (stat conflict)
+        shell: pwsh
+        run: |
+          $file = "SRC/system_of_eqn/linearSOE/sparseGEN/DistributedSuperLU.cpp"
+          if (Test-Path $file) {
+            Write-Host "Patching $file ..."
+            $content = Get-Content $file -Raw
+
+            # تغییر نام متغیر stat به superlu_stat برای جلوگیری از تداخل با ویندوز
+            $content = $content -replace 'SuperLUStat_t\s+stat\s*;', 'SuperLUStat_t superlu_stat;'
+            $content = $content -replace '&stat\b', '&superlu_stat'
+            $content = $content -replace '\bstat\.', 'superlu_stat.'
+            $content = $content -replace '\bstat,', 'superlu_stat,'
+            $content = $content -replace '\(stat\)', '(superlu_stat)'
+
+            Set-Content -Path $file -Value $content -NoNewline
+            Write-Host "Patch applied successfully"
+          } else {
+            Write-Host "WARNING: DistributedSuperLU.cpp not found"
+          }
+
       # ---------- RELEASE OpenSeesSP only ----------
       - name: Configure + Build OpenSeesSP
         shell: cmd
