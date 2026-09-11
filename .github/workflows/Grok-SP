@@ -1,0 +1,205 @@
+name: grok-sp
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/grok-sp.yml'
+
+jobs:
+  build:
+    name: OpenSeesSP Parallel (Windows)
+    runs-on: windows-2022
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout OpenSees official source
+        uses: actions/checkout@v4
+        with:
+          repository: OpenSees/OpenSees
+          fetch-depth: 0
+
+      - name: Setup MSVC 2022
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          vsversion: 2022
+
+      - name: Install Intel oneAPI (MKL + Fortran/ifx + MPI)
+        shell: pwsh
+        env:
+          WINDOWS_BASEKIT_URL: https://registrationcenter-download.intel.com/akdlm/IRC_NAS/7dff44ba-e3af-4448-841c-0d616c8da6e7/w_BaseKit_p_2024.1.0.595_offline.exe
+          WINDOWS_BASEKIT_COMPONENTS: intel.oneapi.win.mkl.devel
+          WINDOWS_HPCKIT_URL: https://registrationcenter-download.intel.com/akdlm/IRC_NAS/c95a3b26-fc45-496c-833b-df08b10297b9/w_HPCKit_p_2024.1.0.561_offline.exe
+          WINDOWS_HPCKIT_COMPONENTS: "intel.oneapi.win.mpi.devel:intel.oneapi.win.ifort-compiler"
+        run: |
+          $script = @"
+          REM SPDX-FileCopyrightText: 2022 Intel Corporation
+          set URL=%1
+          set COMPONENTS=%2
+          curl.exe --output %TEMP%\webimage.exe --url %URL% --retry 5 --retry-delay 5
+          start /b /wait %TEMP%\webimage.exe -s -x -f webimage_extracted --log extract.log
+          del %TEMP%\webimage.exe
+          webimage_extracted\bootstrapper.exe -s --action install --components=%COMPONENTS% --eula=accept -p=NEED_VS2017_INTEGRATION=0 -p=NEED_VS2019_INTEGRATION=1 -p=NEED_VS2022_INTEGRATION=0 --log-dir=.
+          set installer_exit_code=%ERRORLEVEL%
+          rd /s/q "webimage_extracted"
+          exit /b %installer_exit_code%
+          "@
+          $script | Out-File -Encoding ascii install_oneapi.bat
+          cmd /c "install_oneapi.bat $env:WINDOWS_BASEKIT_URL $env:WINDOWS_BASEKIT_COMPONENTS"
+          cmd /c "install_oneapi.bat $env:WINDOWS_HPCKIT_URL $env:WINDOWS_HPCKIT_COMPONENTS"
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Conan
+        run: |
+          pip install conan
+          conan profile detect --force
+
+      - name: Build MUMPS (Parallel)
+        shell: cmd
+        run: |
+          git clone https://github.com/OpenSees/mumps.git
+          cd mumps
+          call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 mod
+          cmake -S . -B build -G Ninja ^
+            -Darith=d ^
+            -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" ^
+            -DCMAKE_EXE_LINKER_FLAGS="/link /FORCE:MULTIPLE" ^
+            -DCMAKE_SHARED_LINKER_FLAGS="/link /FORCE:MULTIPLE"
+          cd build
+          cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS%
+
+      # ---------- RELEASE OpenSeesSP only ----------
+      - name: Configure + Build OpenSeesSP
+        shell: cmd
+        run: |
+          set CMAKE_POLICY_VERSION_MINIMUM=3.5
+          conan install . -s arch=x86_64 -s compiler.runtime=static --build=missing -c tools.cmake.cmaketoolchain:generator=Ninja -of build/Release
+          call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 mod
+          cmake.exe -S . -B build/Release -G "Ninja" ^
+            -DCMAKE_TOOLCHAIN_FILE=build/Release/generators/conan_toolchain.cmake ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" ^
+            -DCMAKE_Fortran_COMPILER="ifx" ^
+            -DBLA_STATIC=ON -DMKL_LINK=static -DMKL_INTERFACE_FULL=intel_lp64 ^
+            -DMUMPS_DIR="..\..\mumps\build" ^
+            -DCMAKE_CXX_FLAGS_RELEASE="/O2 /arch:AVX2 /GL /DNDEBUG" ^
+            -DCMAKE_C_FLAGS_RELEASE="/O2 /arch:AVX2 /GL /DNDEBUG" ^
+            -DCMAKE_Fortran_FLAGS_RELEASE="/O2 /arch:AVX2 /DNDEBUG" ^
+            -DCMAKE_EXE_LINKER_FLAGS="/FORCE:MULTIPLE /LTCG" ^
+            -DCMAKE_SHARED_LINKER_FLAGS="/FORCE:MULTIPLE /LTCG" ^
+            -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
+          cd build/Release
+          cmake --build . --config Release --target OpenSeesSP --parallel %NUMBER_OF_PROCESSORS%
+
+      - name: Verify MKL + Sanity (OpenSeesSP)
+        shell: pwsh
+        run: |
+          Write-Host "=== 1. Checking binary for MKL strings ===" -ForegroundColor Cyan
+          $exePath = "build/Release/OpenSeesSP.exe"
+          if (-not (Test-Path $exePath)) {
+            Write-Host "❌ OpenSeesSP.exe not found at $exePath" -ForegroundColor Red
+            exit 1
+          }
+          $sizeMB = [math]::Round((Get-Item $exePath).Length / 1MB, 2)
+          Write-Host "OpenSeesSP.exe size: $sizeMB MB"
+
+          $content = [System.IO.File]::ReadAllText($exePath, [System.Text.Encoding]::GetEncoding(28591))
+
+          if ($content.Contains("Math Kernel Library")) {
+            Write-Host "✅ 'Math Kernel Library' string FOUND in binary" -ForegroundColor Green
+            $idx = $content.IndexOf("Intel(R) Math Kernel Library")
+            if ($idx -lt 0) { $idx = $content.IndexOf("Math Kernel Library") }
+            if ($idx -ge 0) {
+              $snippet = $content.Substring($idx, [Math]::Min(120, $content.Length - $idx))
+              $snippet = ($snippet -replace '[^\x20-\x7E]', ' ').Trim()
+              Write-Host "   Version info: $snippet"
+            }
+          } else {
+            Write-Host "❌ 'Math Kernel Library' NOT found - Fallback to Netlib!" -ForegroundColor Red
+            exit 1
+          }
+
+          Write-Host ""
+          Write-Host "=== 2. Copy runtime DLLs ===" -ForegroundColor Cyan
+          $iompCandidates = @(
+            "C:\Program Files (x86)\Intel\oneAPI\compiler\2024.1\bin\libiomp5md.dll",
+            "C:\Program Files (x86)\Intel\oneAPI\compiler\latest\bin\libiomp5md.dll"
+          )
+          foreach ($p in $iompCandidates) {
+            if (Test-Path $p) {
+              Copy-Item $p "build\Release\" -Force
+              Write-Host "Copied libiomp5md.dll from: $p"
+              break
+            }
+          }
+
+          Write-Host ""
+          Write-Host "=== 3. Sanity run with Mumps (mpiexec -np 2) ===" -ForegroundColor Cyan
+
+          # Create a simple test script that forces Mumps solver
+          $testTcl = @"
+system Mumps
+puts {MUMPS solver OK}
+exit
+"@
+          $testTcl | Out-File -Encoding ascii -FilePath "build\Release\test_mumps.tcl"
+
+          Push-Location build\Release
+
+          # Use Intel MPI mpiexec
+          $mpiexec = "C:\Program Files (x86)\Intel\oneAPI\mpi\latest\bin\mpiexec.exe"
+          if (-not (Test-Path $mpiexec)) {
+            $mpiexec = "mpiexec"
+          }
+
+          $out = & $mpiexec -np 2 .\OpenSeesSP.exe test_mumps.tcl 2>&1
+          $ec = $LASTEXITCODE
+          Pop-Location
+
+          Write-Host "Exit code: $ec"
+          Write-Host "Output:"
+          if ($out) { $out | ForEach-Object { Write-Host $_ } } else { Write-Host "(no output)" }
+
+          $outText = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+
+          if ($ec -ne 0) {
+            Write-Host "❌ Sanity run failed with exit code $ec" -ForegroundColor Red
+            exit 1
+          }
+          if ($outText -notmatch "MUMPS solver OK") {
+            Write-Host "❌ Expected message 'MUMPS solver OK' not found in output" -ForegroundColor Red
+            exit 1
+          }
+
+          Write-Host "✅ OpenSeesSP + Mumps verification PASSED" -ForegroundColor Green
+
+      - name: Prepare artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts/release | Out-Null
+          Copy-Item build/Release/OpenSeesSP.exe artifacts/release/
+
+          # Copy runtime DLLs
+          $dlls = @(
+            "build\Release\libiomp5md.dll",
+            "C:\Program Files (x86)\Intel\oneAPI\compiler\2024.1\bin\libiomp5md.dll",
+            "C:\Program Files (x86)\Intel\oneAPI\compiler\latest\bin\libiomp5md.dll"
+          )
+          foreach ($p in $dlls) {
+            if (Test-Path $p) {
+              Copy-Item $p artifacts/release/ -Force
+              Write-Host "Copied: $p"
+              break
+            }
+          }
+
+      - name: Upload ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: grok-OpenSeesSP-windows
+          path: artifacts/
+          retention-days: 30
