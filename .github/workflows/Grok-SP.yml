@@ -55,7 +55,7 @@ jobs:
           cmd /c "install_oneapi.bat $env:WINDOWS_HPCKIT_URL $env:WINDOWS_HPCKIT_COMPONENTS"
 
       # ---------------------------------------------------------
-      # 4. Python + Conan (for HDF5, TCL, Eigen, ZLIB)
+      # 4. Python + Conan
       # ---------------------------------------------------------
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
@@ -68,7 +68,7 @@ jobs:
           conan profile detect --force
 
       # ---------------------------------------------------------
-      # 5. MUMPS parallel (d-arith + MKL + Intel MPI)
+      # 5. MUMPS parallel
       # ---------------------------------------------------------
       - name: Build MUMPS (Parallel)
         shell: cmd
@@ -85,8 +85,7 @@ jobs:
           cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS%
 
       # ---------------------------------------------------------
-      # 6. Patch: DistributedSuperLU — resolve `stat` symbol clash
-      #    (SuperLUStat_t stat conflicts with POSIX stat on MSVC)
+      # 6. Patch: DistributedSuperLU — `stat` symbol clash
       # ---------------------------------------------------------
       - name: Patch DistributedSuperLU (stat conflict)
         shell: pwsh
@@ -114,13 +113,8 @@ jobs:
           if (Test-Path $file) {
             Write-Host "Patching $file ..."
             $content = Get-Content $file -Raw
-
-            # VLA → std::vector
             $content = $content -replace 'int numvertex_proc\[nproc\];', 'std::vector<int> numvertex_proc(nproc);'
-
-            # MPI_Allgather needs .data() for the vector
             $content = $content -replace 'MPI_Allgather\(\s*&numvertex\s*,\s*1\s*,\s*MPI_INT\s*,\s*numvertex_proc\s*,', 'MPI_Allgather(&numvertex, 1, MPI_INT, numvertex_proc.data(),'
-
             Set-Content -Path $file -Value $content -NoNewline
             Write-Host "GmshRecorder.cpp patched successfully"
           } else {
@@ -129,7 +123,6 @@ jobs:
 
       # ---------------------------------------------------------
       # 8. Configure + Build OpenSeesSP
-      #    Static MKL, static MSVC runtime, AVX2, MUMPS parallel
       # ---------------------------------------------------------
       - name: Configure + Build OpenSeesSP
         shell: cmd
@@ -154,22 +147,21 @@ jobs:
           cmake --build . --config Release --target OpenSeesSP --parallel %NUMBER_OF_PROCESSORS%
 
       # ---------------------------------------------------------
-      # 9. Sanity check + gather Intel runtime DLLs next to exe
-      #    (no mpiexec test — MPI runtime quirks on CI runners
-      #     make that unreliable; end-user runs it on their own machine)
+      # 9. Sanity check only (no DLL bundling — user must have
+      #    Intel oneAPI HPC Toolkit installed to run in parallel,
+      #    and that install already provides all required DLLs).
       # ---------------------------------------------------------
-      - name: Verify + Collect DLLs
+      - name: Sanity check
         shell: pwsh
         run: |
-          $exePath = "build/Release/OpenSeesSP.exe"
-          if (-not (Test-Path $exePath)) {
+          $exe = "build/Release/OpenSeesSP.exe"
+          if (-not (Test-Path $exe)) {
             Write-Host "OpenSeesSP.exe not found"
             exit 1
           }
-          Write-Host "OpenSeesSP.exe size: $([math]::Round((Get-Item $exePath).Length / 1MB, 2)) MB"
+          Write-Host "OpenSeesSP.exe size: $([math]::Round((Get-Item $exe).Length / 1MB, 2)) MB"
 
-          # Confirm MKL was actually linked in
-          $content = [System.IO.File]::ReadAllText($exePath, [System.Text.Encoding]::GetEncoding(28591))
+          $content = [System.IO.File]::ReadAllText($exe, [System.Text.Encoding]::GetEncoding(28591))
           if ($content.Contains("Math Kernel Library")) {
             Write-Host "MKL found in binary"
           } else {
@@ -177,36 +169,19 @@ jobs:
             exit 1
           }
 
-          # Copy Intel runtime DLLs so the exe is self-contained
-          $dllDirs = @(
-            "C:\Program Files (x86)\Intel\oneAPI\compiler\latest\bin",
-            "C:\Program Files (x86)\Intel\oneAPI\mpi\latest\bin",
-            "C:\Program Files (x86)\Intel\oneAPI\mkl\latest\bin"
-          )
-
-          foreach ($dir in $dllDirs) {
-            if (Test-Path $dir) {
-              Get-ChildItem "$dir\*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
-                Copy-Item $_.FullName "build\Release\" -Force -ErrorAction SilentlyContinue
-              }
-              Write-Host "Copied DLLs from $dir"
-            } else {
-              Write-Host "WARN: $dir does not exist"
-            }
-          }
-          Write-Host "OK"
-
       # ---------------------------------------------------------
-      # 10. Package artifact (exe + DLLs)
+      # 10. Package artifact: just the exe
       # ---------------------------------------------------------
       - name: Prepare artifacts
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts/release | Out-Null
           Copy-Item build/Release/OpenSeesSP.exe artifacts/release/
-          Get-ChildItem build/Release/*.dll -ErrorAction SilentlyContinue | ForEach-Object {
-            Copy-Item $_.FullName artifacts/release/
-          }
+
+          $totalMB = [math]::Round(
+            ((Get-ChildItem artifacts/release -Recurse | Measure-Object Length -Sum).Sum) / 1MB, 2
+          )
+          Write-Host "Artifact size: $totalMB MB"
 
       - name: Upload ZIP artifact
         uses: actions/upload-artifact@v4
