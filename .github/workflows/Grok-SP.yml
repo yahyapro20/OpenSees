@@ -98,8 +98,8 @@ jobs:
             -DCMAKE_Fortran_COMPILER="ifx" ^
             -DBLA_STATIC=ON -DMKL_LINK=static -DMKL_INTERFACE_FULL=intel_lp64 ^
             -DMUMPS_DIR="..\..\mumps\build" ^
-            -DCMAKE_CXX_FLAGS_RELEASE="/O2 /arch:AVX2 /GL /DNDEBUG" ^
-            -DCMAKE_C_FLAGS_RELEASE="/O2 /arch:AVX2 /GL /DNDEBUG" ^
+            -DCMAKE_CXX_FLAGS_RELEASE="/O2 /arch:AVX2 /GL /DNDEBUG /D_PARALLEL_PROCESSING=1" ^
+            -DCMAKE_C_FLAGS_RELEASE="/O2 /arch:AVX2 /GL /DNDEBUG /D_PARALLEL_PROCESSING=1" ^
             -DCMAKE_Fortran_FLAGS_RELEASE="/O2 /arch:AVX2 /DNDEBUG" ^
             -DCMAKE_EXE_LINKER_FLAGS="/FORCE:MULTIPLE /LTCG" ^
             -DCMAKE_SHARED_LINKER_FLAGS="/FORCE:MULTIPLE /LTCG" ^
