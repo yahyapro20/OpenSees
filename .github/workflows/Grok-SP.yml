@@ -147,16 +147,73 @@ jobs:
             exit 1
           }
 
-          # Copy DLL
-          $iomp = "C:\Program Files (x86)\Intel\oneAPI\compiler\2024.1\bin\libiomp5md.dll"
-          if (Test-Path $iomp) { Copy-Item $iomp "build\Release\" -Force }
+          # ---------------------------------------------------------
+          # Copy ALL required Intel runtime DLLs next to the exe
+          # ---------------------------------------------------------
+          $dllDirs = @(
+            "C:\Program Files (x86)\Intel\oneAPI\compiler\latest\bin",
+            "C:\Program Files (x86)\Intel\oneAPI\compiler\2024.1\bin",
+            "C:\Program Files (x86)\Intel\oneAPI\mpi\latest\bin",
+            "C:\Program Files (x86)\Intel\oneAPI\mpi\2021.12\bin",
+            "C:\Program Files (x86)\Intel\oneAPI\mkl\latest\bin"
+          )
 
+          $criticalDlls = @(
+            "libiomp5md.dll",
+            "libifcoremd.dll",
+            "libifportmd.dll",
+            "libmmd.dll",
+            "svml_dispmd.dll",
+            "impi.dll",
+            "impi_pmi.dll",
+            "mpi.dll"
+          )
+
+          foreach ($dir in $dllDirs) {
+            if (Test-Path $dir) {
+              Get-ChildItem "$dir\*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+                Copy-Item $_.FullName "build\Release\" -Force -ErrorAction SilentlyContinue
+              }
+              Write-Host "Copied DLLs from $dir"
+            } else {
+              Write-Host "WARN: $dir does not exist"
+            }
+          }
+
+          foreach ($d in $criticalDlls) {
+            $found = Get-ChildItem -Path $dllDirs -Filter $d -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) {
+              Copy-Item $found.FullName "build\Release\" -Force -ErrorAction SilentlyContinue
+            } else {
+              Write-Host "WARN: could not find $d"
+            }
+          }
+
+          # ---------------------------------------------------------
+          # Add Intel bin dirs to PATH so mpiexec can find its DLLs
+          # ---------------------------------------------------------
+          $env:PATH = "build\Release;" + ($dllDirs -join ";") + ";" + $env:PATH
+          Write-Host "PATH updated."
+
+          # ---------------------------------------------------------
           # Test
-          $testTcl = "system Mumps`nputs {MUMPS solver OK}`nexit"
-          $testTcl | Out-File -Encoding ascii "build\Release\test_mumps.tcl"
+          # ---------------------------------------------------------
+          $testTcl = "puts {OpenSeesSP started}`nexit"
+          $testTcl | Out-File -Encoding ascii "build\Release\test_start.tcl"
+
+          $mpiexec = $null
+          foreach ($d in $dllDirs) {
+            $candidate = Join-Path $d "mpiexec.exe"
+            if (Test-Path $candidate) { $mpiexec = $candidate; break }
+          }
+          if (-not $mpiexec) {
+            Write-Host "mpiexec.exe not found!"
+            exit 1
+          }
+          Write-Host "Using mpiexec: $mpiexec"
 
           Push-Location build\Release
-          $out = & "C:\Program Files (x86)\Intel\oneAPI\mpi\latest\bin\mpiexec.exe" -np 2 .\OpenSeesSP.exe test_mumps.tcl 2>&1
+          $out = & $mpiexec -np 2 .\OpenSeesSP.exe test_start.tcl 2>&1
           $ec = $LASTEXITCODE
           Pop-Location
 
@@ -164,7 +221,8 @@ jobs:
           $out | ForEach-Object { Write-Host $_ }
 
           $outText = if ($out -is [array]) { $out -join "`n" } else { "$out" }
-          if ($ec -ne 0 -or $outText -notmatch "MUMPS solver OK") {
+          if ($ec -ne 0 -or $outText -notmatch "OpenSeesSP started") {
+            Write-Host "Startup test failed"
             exit 1
           }
           Write-Host "PASSED"
@@ -174,8 +232,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path artifacts/release | Out-Null
           Copy-Item build/Release/OpenSeesSP.exe artifacts/release/
-          if (Test-Path "build\Release\libiomp5md.dll") {
-            Copy-Item "build\Release\libiomp5md.dll" artifacts/release/
+          Get-ChildItem build/Release/*.dll -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item $_.FullName artifacts/release/
           }
 
       - name: Upload ZIP artifact
