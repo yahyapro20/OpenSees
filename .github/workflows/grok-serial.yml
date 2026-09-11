@@ -179,16 +179,19 @@ jobs:
           Write-Host "Output:"
           if ($out) { $out | ForEach-Object { Write-Host $_ } } else { Write-Host "(no output)" }
 
+          # تبدیل خروجی به یک رشته واحد برای چک کردن
+          $outText = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+
           if ($ec -ne 0) {
             Write-Host "❌ Sanity run failed with exit code $ec" -ForegroundColor Red
             exit 1
           }
-          if ($out -notmatch "OpenSees serial OK") {
+          if ($outText -notmatch "OpenSees serial OK") {
             Write-Host "❌ Expected message 'OpenSees serial OK' not found in output" -ForegroundColor Red
             exit 1
           }
 
-          Write-Host "✅ MKL verification + Sanity PASSED" -ForegroundColor Green
+          Write-Host "✅ MKL verification + Sanity PASSED" -ForegroundColor Green 
 
       - name: Prepare artifacts
         shell: pwsh
